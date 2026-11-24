@@ -1,12 +1,35 @@
 using Microsoft.EntityFrameworkCore;
 using TuneTrack.Components;
 using TuneTrack.Data;
+using TuneTrack.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
+
+// HTTP Client & Memory Cache
+builder.Services.AddHttpClient("MusicApi", client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(10);
+    client.DefaultRequestHeaders.UserAgent.ParseAdd("TuneTrack/1.0 (Educational Music Analytics)");
+});
+builder.Services.AddMemoryCache();
+
+// Core TuneTrack Domain Services
+builder.Services.AddSingleton<IDiversityScorer, DiversityScorer>();
+builder.Services.AddSingleton<ISamplePlaylistService, SamplePlaylistService>();
+builder.Services.AddSingleton<ITrackEnricherService, TrackEnricherService>();
+builder.Services.AddSingleton<IRecommendationEngine, RecommendationEngine>();
+
+// Modular Playlist Providers
+builder.Services.AddSingleton<IPlaylistProvider, SpotifyPlaylistProvider>();
+builder.Services.AddSingleton<IPlaylistProvider, AppleMusicPlaylistProvider>();
+builder.Services.AddSingleton<IPlaylistProvider, YouTubeMusicPlaylistProvider>();
+
+// Primary Application Service
+builder.Services.AddScoped<IPlaylistService, PlaylistService>();
 
 // Configure AppDbContext (PostgreSQL / Supabase with In-Memory fallback)
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");

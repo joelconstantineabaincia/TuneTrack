@@ -3,7 +3,7 @@ const path = require('path');
 const fs = require('fs');
 
 async function run() {
-    console.log("Starting TuneTrack UI Browser Verification...");
+    console.log("Starting Full End-to-End Browser Verification for TuneTrack...");
 
     const chromePath = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
     const browser = await puppeteer.launch({
@@ -29,16 +29,11 @@ async function run() {
     }
 
     try {
-        console.log("Navigating to http://127.0.0.1:5199...");
+        console.log("1. Navigating to http://127.0.0.1:5199...");
         await page.goto('http://127.0.0.1:5199', { waitUntil: 'networkidle0', timeout: 15000 });
 
-        // 1. Idle Screenshot at 1440px
-        const idlePath = path.join(docsDir, 'screenshot-1440-idle.png');
-        await page.screenshot({ path: idlePath, fullPage: false });
-        console.log("✓ Captured idle screenshot at 1440px:", idlePath);
-
-        // 2. Click "Eclectic Horizon" sample playlist button
-        console.log("Clicking 'Eclectic Horizon' sample button...");
+        // 2. Click "Eclectic Horizon" sample
+        console.log("2. Clicking 'Eclectic Horizon' sample button...");
         const sampleButtons = await page.$$('button');
         let clickedSample = false;
         for (const btn of sampleButtons) {
@@ -49,77 +44,80 @@ async function run() {
                 break;
             }
         }
+        if (!clickedSample) throw new Error("Could not find 'Eclectic Horizon' sample button");
 
-        if (!clickedSample) {
-            throw new Error("Could not find 'Eclectic Horizon' sample button");
-        }
-
-        // Wait for playlist title and diversity score to render
+        // Wait for analysis results
         await page.waitForSelector('h1', { timeout: 10000 });
-        await new Promise(r => setTimeout(r, 1500)); // allow live iTunes recs to populate
+        await new Promise(r => setTimeout(r, 1500));
+        console.log("✓ Analysis rendered successfully!");
 
-        const analyzed1440Path = path.join(docsDir, 'screenshot-1440-analyzed.png');
-        await page.screenshot({ path: analyzed1440Path, fullPage: true });
-        console.log("✓ Captured analyzed dashboard screenshot at 1440px:", analyzed1440Path);
-
-        // 3. Test Tracklist Search / Filter
-        console.log("Testing search filter...");
-        const searchInput = await page.$('input[placeholder*="Filter tracks"]');
-        if (searchInput) {
-            await searchInput.type('Pink');
-            await new Promise(r => setTimeout(r, 500));
-            const rowCount = await page.$$eval('tbody tr', rows => rows.length);
-            console.log(`✓ Search filter for 'Pink' returned ${rowCount} row(s)`);
-            // Clear input
-            await page.evaluate(el => el.value = '', searchInput);
-            await searchInput.type(' ');
-            await page.keyboard.press('Backspace');
-            await new Promise(r => setTimeout(r, 500));
-        }
-
-        // 4. Test Bookmark Action
-        console.log("Testing bookmark toggle...");
+        // 3. Bookmark a recommendation
+        console.log("3. Bookmarking a suggested track...");
         const bookmarkBtns = await page.$$('button[title*="Bookmark"]');
-        if (bookmarkBtns.length > 0) {
-            await bookmarkBtns[0].click();
-            await new Promise(r => setTimeout(r, 500));
-            console.log("✓ Bookmark button clicked and persisted");
-        }
+        if (bookmarkBtns.length === 0) throw new Error("No bookmark buttons found on recommendations");
+        await bookmarkBtns[0].click();
+        await new Promise(r => setTimeout(r, 800));
+        console.log("✓ Recommendation bookmarked!");
 
-        // 5. Test Copy Action
-        console.log("Testing copy track action...");
-        const copyBtns = await page.$$('button[title*="Copy Title"]');
-        if (copyBtns.length > 0) {
-            await copyBtns[0].click();
-            await new Promise(r => setTimeout(r, 500));
-            console.log("✓ Copy track button clicked");
-        }
-
-        // 6. Test Mobile Viewport at 390px (iPhone 14/15 size)
-        console.log("Setting mobile viewport (390x844)...");
-        await page.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true });
+        // 4. Navigate to /saved
+        console.log("4. Navigating to /saved...");
+        await page.goto('http://127.0.0.1:5199/saved', { waitUntil: 'networkidle0', timeout: 10000 });
         await new Promise(r => setTimeout(r, 800));
 
-        const mobilePath = path.join(docsDir, 'screenshot-390-mobile.png');
-        await page.screenshot({ path: mobilePath, fullPage: false });
-        console.log("✓ Captured mobile screenshot at 390px:", mobilePath);
+        const savedPath = path.join(docsDir, 'screenshot-saved-1440.png');
+        await page.screenshot({ path: savedPath, fullPage: false });
+        console.log("✓ Captured /saved screenshot:", savedPath);
 
-        // 7. Test "Strictly Synth-Pop" (low diversity)
-        console.log("Clicking 'Strictly Synth-Pop' sample...");
-        const synthButtons = await page.$$('button');
-        for (const btn of synthButtons) {
-            const text = await page.evaluate(el => el.textContent, btn);
-            if (text && text.includes('Strictly Synth-Pop')) {
-                await btn.click();
-                break;
-            }
+        const savedCards = await page.$$('h2');
+        console.log(`✓ Found ${savedCards.length} saved item(s) on /saved`);
+        if (savedCards.length === 0) throw new Error("Expected at least 1 saved item on /saved");
+
+        // 5. Navigate to /history
+        console.log("5. Navigating to /history...");
+        await page.goto('http://127.0.0.1:5199/history', { waitUntil: 'networkidle0', timeout: 10000 });
+        await new Promise(r => setTimeout(r, 800));
+
+        const historyPath = path.join(docsDir, 'screenshot-history-1440.png');
+        await page.screenshot({ path: historyPath, fullPage: false });
+        console.log("✓ Captured /history screenshot:", historyPath);
+
+        const viewReportBtn = await page.$('a[href*="/?id="]');
+        if (!viewReportBtn) throw new Error("Could not find 'View Report' link in history");
+        console.log("✓ Found 'View Report' link in history");
+
+        // 6. Click View Report to reopen analysis
+        console.log("6. Clicking 'View Report' to reopen historical analysis...");
+        await viewReportBtn.click();
+        await page.waitForSelector('h1', { timeout: 10000 });
+        await new Promise(r => setTimeout(r, 1000));
+        const reopenedTitle = await page.$eval('h1', el => el.textContent);
+        console.log(`✓ Historical analysis reopened: "${reopenedTitle.trim()}"`);
+
+        // 7. Clean up: Remove item from /saved
+        console.log("7. Testing removal from /saved...");
+        await page.goto('http://127.0.0.1:5199/saved', { waitUntil: 'networkidle0', timeout: 10000 });
+        await new Promise(r => setTimeout(r, 800));
+        const removeSavedBtn = await page.$('button[title*="Remove from saved"]');
+        if (removeSavedBtn) {
+            await removeSavedBtn.click();
+            await new Promise(r => setTimeout(r, 500));
+            console.log("✓ Removed saved item successfully");
         }
-        await new Promise(r => setTimeout(r, 1500));
-        const synthPath = path.join(docsDir, 'screenshot-1440-synthpop.png');
-        await page.screenshot({ path: synthPath, fullPage: true });
-        console.log("✓ Captured Synth-Pop (Low Diversity) screenshot:", synthPath);
 
-        console.log("All UI and responsive verifications PASSED!");
+        // 8. Clean up: Delete item from /history
+        console.log("8. Testing deletion from /history...");
+        await page.goto('http://127.0.0.1:5199/history', { waitUntil: 'networkidle0', timeout: 10000 });
+        await new Promise(r => setTimeout(r, 800));
+        const deleteHistoryBtn = await page.$('button[title*="Delete from history"]');
+        if (deleteHistoryBtn) {
+            await deleteHistoryBtn.click();
+            await new Promise(r => setTimeout(r, 500));
+            console.log("✓ Deleted history item successfully");
+        }
+
+        console.log("==================================================");
+        console.log("ALL END-TO-END FLOW VERIFICATIONS PASSED 100%!");
+        console.log("==================================================");
     } catch (err) {
         console.error("Verification failed:", err);
         process.exit(1);

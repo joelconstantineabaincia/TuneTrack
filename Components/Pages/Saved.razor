@@ -1,0 +1,185 @@
+@page "/saved"
+@rendermode InteractiveServer
+@inject IPlaylistService PlaylistService
+@inject IJSRuntime JS
+@inject NavigationManager Navigation
+
+<PageTitle>Saved Recommendations — TuneTrack</PageTitle>
+
+<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
+    <!-- Page Header -->
+    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-6 border-b border-white/10">
+        <div>
+            <h1 class="text-2xl sm:text-3xl font-bold tracking-tight text-white">Saved Recommendations</h1>
+            <p class="text-xs sm:text-sm text-zinc-400 mt-1">Suggested tracks bookmarked during your playlist analyses.</p>
+        </div>
+        <a href="/" class="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-white/10 text-xs font-semibold text-zinc-200 hover:text-white transition-colors self-start sm:self-auto">
+            <svg class="w-3.5 h-3.5 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+            </svg>
+            <span>Explore More Music</span>
+        </a>
+    </div>
+
+    <!-- Saved List State -->
+    @if (isLoading)
+    {
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 animate-pulse">
+            @for (int i = 0; i < 6; i++)
+            {
+                <div class="h-24 bg-zinc-900/40 rounded-xl border border-white/5"></div>
+            }
+        </div>
+    }
+    else if (savedItems.Count == 0)
+    {
+        <!-- Empty State -->
+        <div class="py-16 text-center space-y-4 max-w-sm mx-auto">
+            <div class="w-12 h-12 rounded-full bg-zinc-900 border border-white/10 flex items-center justify-center mx-auto text-zinc-500">
+                <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
+                </svg>
+            </div>
+            <h2 class="text-base font-semibold text-white">No saved recommendations yet</h2>
+            <p class="text-xs text-zinc-400 leading-relaxed">
+                When analyzing a playlist, click the bookmark icon on any suggested track to save it here for later listening.
+            </p>
+            <div class="pt-2">
+                <a href="/" class="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold text-xs transition-colors">
+                    Find Recommendations
+                </a>
+            </div>
+        </div>
+    }
+    else
+    {
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            @foreach (var item in savedItems)
+            {
+                <div class="p-4 rounded-xl bg-zinc-900/40 border border-white/5 hover:border-white/10 transition-colors flex items-center justify-between gap-3 group">
+                    <div class="flex items-center gap-3 min-w-0">
+                        <!-- Artwork Thumbnail -->
+                        <div class="w-12 h-12 rounded-lg bg-zinc-800 overflow-hidden flex-shrink-0 border border-white/10">
+                            @if (!string.IsNullOrEmpty(item.ArtworkUrl))
+                            {
+                                <img src="@item.ArtworkUrl" alt="@item.Title" class="w-full h-full object-cover" />
+                            }
+                            else
+                            {
+                                <div class="w-full h-full flex items-center justify-center text-zinc-600">
+                                    <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2z" />
+                                    </svg>
+                                </div>
+                            }
+                        </div>
+
+                        <!-- Track Info -->
+                        <div class="min-w-0 space-y-0.5">
+                            <h2 class="text-sm font-semibold text-white truncate max-w-[160px] sm:max-w-[200px]">
+                                @item.Title
+                            </h2>
+                            <p class="text-xs text-zinc-400 truncate max-w-[160px] sm:max-w-[200px]">
+                                @item.Artist
+                            </p>
+                            @if (!string.IsNullOrEmpty(item.Genre))
+                            {
+                                <span class="inline-block text-[10px] text-zinc-500 font-mono">
+                                    @item.Genre
+                                </span>
+                            }
+                        </div>
+                    </div>
+
+                    <!-- Actions: Copy & Remove -->
+                    <div class="flex items-center gap-1.5 flex-shrink-0">
+                        <button @onclick="() => CopyTrack(item)"
+                                title="Copy Title — Artist"
+                                aria-label="Copy track info"
+                                class="p-1.5 rounded-lg hover:bg-white/10 text-zinc-400 hover:text-white transition-colors">
+                            @if (copiedItemTitle == item.Title)
+                            {
+                                <svg class="w-4 h-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                                </svg>
+                            }
+                            else
+                            {
+                                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                                </svg>
+                            }
+                        </button>
+
+                        <button @onclick="() => RemoveSaved(item.Id)"
+                                title="Remove from saved"
+                                aria-label="Remove recommendation"
+                                class="p-1.5 rounded-lg hover:bg-red-500/10 text-zinc-500 hover:text-red-400 transition-colors">
+                            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+            }
+        </div>
+    }
+</div>
+
+@code {
+    private bool isLoading = true;
+    private string clientId = "";
+    private string? copiedItemTitle;
+    private List<SavedRecommendation> savedItems = new();
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            try
+            {
+                clientId = await JS.InvokeAsync<string>("tuneTrack.getClientId");
+                await LoadSaved();
+            }
+            finally
+            {
+                isLoading = false;
+                StateHasChanged();
+            }
+        }
+    }
+
+    private async Task LoadSaved()
+    {
+        if (string.IsNullOrWhiteSpace(clientId)) return;
+        savedItems = await PlaylistService.GetSavedRecommendationsAsync(clientId);
+    }
+
+    private async Task CopyTrack(SavedRecommendation item)
+    {
+        string text = $"{item.Title} — {item.Artist}";
+        bool success = await JS.InvokeAsync<bool>("tuneTrack.copyToClipboard", text);
+        if (success)
+        {
+            copiedItemTitle = item.Title;
+            StateHasChanged();
+            await Task.Delay(1500);
+            if (copiedItemTitle == item.Title)
+            {
+                copiedItemTitle = null;
+                StateHasChanged();
+            }
+        }
+    }
+
+    private async Task RemoveSaved(int id)
+    {
+        if (string.IsNullOrWhiteSpace(clientId)) return;
+        bool removed = await PlaylistService.RemoveSavedRecommendationAsync(id, clientId);
+        if (removed)
+        {
+            savedItems.RemoveAll(s => s.Id == id);
+            StateHasChanged();
+        }
+    }
+}

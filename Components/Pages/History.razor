@@ -1,0 +1,187 @@
+@page "/history"
+@rendermode InteractiveServer
+@inject IPlaylistService PlaylistService
+@inject IJSRuntime JS
+@inject NavigationManager Navigation
+
+<PageTitle>Analysis History — TuneTrack</PageTitle>
+
+<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
+    <!-- Page Header -->
+    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-6 border-b border-white/10">
+        <div>
+            <h1 class="text-2xl sm:text-3xl font-bold tracking-tight text-white">Analysis History</h1>
+            <p class="text-xs sm:text-sm text-zinc-400 mt-1">Past playlists analyzed in this browser session.</p>
+        </div>
+        <a href="/" class="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-white/10 text-xs font-semibold text-zinc-200 hover:text-white transition-colors self-start sm:self-auto">
+            <svg class="w-3.5 h-3.5 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+            </svg>
+            <span>Analyze New Link</span>
+        </a>
+    </div>
+
+    <!-- History List State -->
+    @if (isLoading)
+    {
+        <div class="space-y-3 animate-pulse">
+            @for (int i = 0; i < 4; i++)
+            {
+                <div class="h-20 bg-zinc-900/40 rounded-xl border border-white/5"></div>
+            }
+        </div>
+    }
+    else if (historyItems.Count == 0)
+    {
+        <!-- Empty State -->
+        <div class="py-16 text-center space-y-4 max-w-sm mx-auto">
+            <div class="w-12 h-12 rounded-full bg-zinc-900 border border-white/10 flex items-center justify-center mx-auto text-zinc-500">
+                <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+            </div>
+            <h2 class="text-base font-semibold text-white">No analysis history yet</h2>
+            <p class="text-xs text-zinc-400 leading-relaxed">
+                Playlists you analyze will be saved here so you can review diversity scores and recommendations anytime.
+            </p>
+            <div class="pt-2">
+                <a href="/" class="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold text-xs transition-colors">
+                    Analyze a Playlist
+                </a>
+            </div>
+        </div>
+    }
+    else
+    {
+        <div class="space-y-3">
+            @foreach (var item in historyItems)
+            {
+                <div class="p-4 rounded-xl bg-zinc-900/40 border border-white/5 hover:border-white/10 transition-colors flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 group">
+                    <div class="flex items-center gap-4 min-w-0">
+                        <!-- Cover Art -->
+                        <div class="w-14 h-14 rounded-lg bg-zinc-800 overflow-hidden flex-shrink-0 border border-white/10">
+                            @if (!string.IsNullOrEmpty(item.CoverUrl))
+                            {
+                                <img src="@item.CoverUrl" alt="@item.Title" class="w-full h-full object-cover" />
+                            }
+                            else
+                            {
+                                <div class="w-full h-full flex items-center justify-center text-zinc-600">
+                                    <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2z" />
+                                    </svg>
+                                </div>
+                            }
+                        </div>
+
+                        <!-- Title and Info -->
+                        <div class="min-w-0 space-y-1">
+                            <div class="flex items-center gap-2">
+                                <span class="px-2 py-0.5 rounded text-[11px] font-medium @GetPlatformBadgeClass(item.Platform)">
+                                    @item.Platform
+                                </span>
+                                <span class="text-xs text-zinc-500 font-mono">
+                                    @item.AnalyzedAt.ToString("MMM d, yyyy · HH:mm")
+                                </span>
+                            </div>
+                            <h2 class="text-sm font-semibold text-white truncate max-w-sm sm:max-w-md">
+                                @item.Title
+                            </h2>
+                            <div class="flex items-center gap-3 text-xs text-zinc-400 font-mono">
+                                <span class="font-bold @GetScoreColor(item.DiversityScore)">
+                                    @item.DiversityScore Diversity
+                                </span>
+                                <span class="text-zinc-600">·</span>
+                                <span>@item.TrackCount Tracks</span>
+                                <span class="text-zinc-600">·</span>
+                                <span>@item.TotalDuration</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Actions -->
+                    <div class="flex items-center gap-2 self-end sm:self-auto flex-shrink-0">
+                        <a href="/?id=@item.Id"
+                           class="px-3.5 py-1.5 rounded-lg bg-white/[0.08] hover:bg-white/[0.14] text-xs font-semibold text-white transition-colors flex items-center gap-1.5">
+                            <span>View Report</span>
+                            <svg class="w-3.5 h-3.5 text-zinc-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+                            </svg>
+                        </a>
+
+                        <button @onclick="() => DeleteHistory(item.Id)"
+                                title="Delete from history"
+                                aria-label="Delete playlist from history"
+                                class="p-2 rounded-lg hover:bg-red-500/10 text-zinc-500 hover:text-red-400 transition-colors">
+                            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+            }
+        </div>
+    }
+</div>
+
+@code {
+    private bool isLoading = true;
+    private string clientId = "";
+    private List<AnalyzedPlaylist> historyItems = new();
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            try
+            {
+                clientId = await JS.InvokeAsync<string>("tuneTrack.getClientId");
+                await LoadHistory();
+            }
+            finally
+            {
+                isLoading = false;
+                StateHasChanged();
+            }
+        }
+    }
+
+    private async Task LoadHistory()
+    {
+        if (string.IsNullOrWhiteSpace(clientId)) return;
+        historyItems = await PlaylistService.GetHistoryAsync(clientId);
+    }
+
+    private async Task DeleteHistory(int id)
+    {
+        if (string.IsNullOrWhiteSpace(clientId)) return;
+        bool deleted = await PlaylistService.DeleteHistoryItemAsync(id, clientId);
+        if (deleted)
+        {
+            historyItems.RemoveAll(h => h.Id == id);
+            StateHasChanged();
+        }
+    }
+
+    private static string GetPlatformBadgeClass(string platform)
+    {
+        return platform switch
+        {
+            "Spotify" => "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20",
+            "Apple Music" => "bg-rose-500/10 text-rose-400 border border-rose-500/20",
+            "YouTube Music" => "bg-red-500/10 text-red-400 border border-red-500/20",
+            _ => "bg-zinc-800 text-zinc-300 border border-white/5"
+        };
+    }
+
+    private static string GetScoreColor(double score)
+    {
+        return score switch
+        {
+            >= 80 => "text-emerald-400",
+            >= 60 => "text-cyan-400",
+            >= 40 => "text-amber-400",
+            _ => "text-rose-400"
+        };
+    }
+}

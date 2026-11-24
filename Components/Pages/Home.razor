@@ -1,13 +1,872 @@
 @page "/"
+@rendermode InteractiveServer
+@inject IPlaylistService PlaylistService
+@inject ISamplePlaylistService SampleService
+@inject IJSRuntime JS
+@inject NavigationManager Navigation
 
-<PageTitle>TuneTrack</PageTitle>
+<PageTitle>Playlist Analyzer — TuneTrack</PageTitle>
 
-<div class="min-h-screen flex flex-col items-center justify-center px-4 text-center">
-    <div class="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-zinc-400 mb-4">
-        <span>TuneTrack</span>
-        <span class="text-zinc-600">/</span>
-        <span class="text-emerald-400 font-medium">Ready</span>
+<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-8">
+    <!-- Top Search & Input Strip -->
+    <div class="space-y-4">
+        <div class="flex flex-col sm:flex-row gap-3">
+            <div class="relative flex-1">
+                <div class="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-zinc-500">
+                    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                    </svg>
+                </div>
+                <input type="text"
+                       @bind="inputUrl"
+                       @bind:event="oninput"
+                       @onkeydown="HandleKeyDown"
+                       placeholder="Paste Spotify, Apple Music, or YouTube Music playlist link..."
+                       class="w-full pl-10 pr-24 py-2.5 bg-zinc-900 border border-white/10 rounded-lg text-sm text-zinc-100 placeholder-zinc-500 focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950 outline-none transition-all" />
+
+                <!-- Auto-detected platform badge inside input -->
+                @if (!string.IsNullOrWhiteSpace(DetectedPlatform))
+                {
+                    <div class="absolute inset-y-0 right-2 flex items-center gap-1.5">
+                        <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-medium @GetPlatformBadgeClass(DetectedPlatform)">
+                            @DetectedPlatform
+                        </span>
+                        <button type="button"
+                                @onclick="() => inputUrl = string.Empty"
+                                class="text-zinc-500 hover:text-zinc-300 p-1"
+                                aria-label="Clear input">
+                            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                        </button>
+                    </div>
+                }
+            </div>
+
+            <button @onclick="AnalyzeEnteredUrl"
+                    disabled="@(isLoading || string.IsNullOrWhiteSpace(inputUrl))"
+                    class="px-5 py-2.5 bg-emerald-500 hover:bg-emerald-400 active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed text-zinc-950 font-semibold text-sm rounded-lg flex items-center justify-center gap-2 transition-all">
+                @if (isLoading)
+                {
+                    <svg class="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+                    </svg>
+                    <span>Analyzing...</span>
+                }
+                else
+                {
+                    <span>Analyze</span>
+                }
+            </button>
+        </div>
+
+        <!-- Sample Playlists Strip -->
+        <div class="flex flex-wrap items-center gap-2 text-xs">
+            <span class="text-zinc-500 font-medium">Try offline sample:</span>
+            @foreach (var sample in SampleService.GetSamplePlaylists())
+            {
+                <button @onclick="() => LoadSample(sample.Id)"
+                        disabled="@isLoading"
+                        class="px-2.5 py-1 rounded bg-zinc-900 hover:bg-zinc-800 border border-white/5 text-zinc-300 hover:text-white transition-colors flex items-center gap-1.5">
+                    <span>@sample.Title.Split(':')[0]</span>
+                    <span class="text-[10px] px-1.5 py-0.5 rounded @(sample.DiversityBadge == "High Diversity" ? "bg-emerald-500/10 text-emerald-400" : sample.DiversityBadge == "Low Diversity" ? "bg-rose-500/10 text-rose-400" : "bg-cyan-500/10 text-cyan-400")">
+                        @sample.DiversityBadge
+                    </span>
+                </button>
+            }
+        </div>
     </div>
-    <h1 class="text-3xl font-bold tracking-tight text-white sm:text-4xl">TuneTrack</h1>
-    <p class="mt-2 text-sm text-zinc-400 max-w-sm">Blazor Web App with Tailwind CSS initialized cleanly.</p>
+
+    <!-- Error State -->
+    @if (!string.IsNullOrEmpty(errorMessage))
+    {
+        <div class="p-4 rounded-lg bg-red-950/40 border border-red-500/20 text-red-200 text-sm flex items-start justify-between gap-4">
+            <div class="flex items-center gap-2">
+                <svg class="w-5 h-5 text-red-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                </svg>
+                <span>@errorMessage</span>
+            </div>
+            <button @onclick="() => errorMessage = null" class="text-red-400 hover:text-red-200 text-xs">Dismiss</button>
+        </div>
+    }
+
+    <!-- Loading Skeleton State -->
+    @if (isLoading)
+    {
+        <div class="space-y-8 animate-pulse">
+            <!-- Header skeleton -->
+            <div class="flex flex-col sm:flex-row items-start sm:items-center gap-6 p-6 rounded-xl bg-zinc-900/50 border border-white/5">
+                <div class="w-40 h-40 bg-zinc-800 rounded-lg flex-shrink-0"></div>
+                <div class="space-y-3 flex-1">
+                    <div class="h-4 w-24 bg-zinc-800 rounded"></div>
+                    <div class="h-8 w-3/4 bg-zinc-800 rounded"></div>
+                    <div class="h-4 w-1/2 bg-zinc-800 rounded"></div>
+                </div>
+            </div>
+
+            <!-- Grid skeleton -->
+            <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
+                <div class="lg:col-span-8 space-y-3">
+                    <div class="h-10 bg-zinc-900 rounded-lg"></div>
+                    @for (int i = 0; i < 6; i++)
+                    {
+                        <div class="h-14 bg-zinc-900/40 rounded-lg border border-white/5"></div>
+                    }
+                </div>
+                <div class="lg:col-span-4 space-y-4">
+                    <div class="h-48 bg-zinc-900/40 rounded-lg border border-white/5"></div>
+                    <div class="h-64 bg-zinc-900/40 rounded-lg border border-white/5"></div>
+                </div>
+            </div>
+        </div>
+    }
+    else if (dashboard != null)
+    {
+        <!-- Partial Result Alert with Manual Paste Fallback -->
+        @if (dashboard.IsPartialResult || showPasteFallback)
+        {
+            <div class="p-5 rounded-xl bg-amber-950/30 border border-amber-500/20 text-amber-200 space-y-3">
+                <div class="flex items-center gap-2 font-medium text-sm">
+                    <svg class="w-5 h-5 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <span>Tracklist Protected by Platform</span>
+                </div>
+                <p class="text-xs text-amber-200/80 leading-relaxed">
+                    @(dashboard.WarningMessage ?? "This platform limits keyless scraping of full tracklists. Paste your tracklist below (one 'Artist - Title' per line) to enrich genres and compute diversity.")
+                </p>
+                <div class="space-y-2">
+                    <textarea @bind="pastedTrackList"
+                              rows="4"
+                              placeholder="1. Daft Punk - One More Time&#10;2. Kendrick Lamar - Alright&#10;3. Fleet Foxes - White Winter Hymnal"
+                              class="w-full p-3 bg-zinc-900 border border-white/10 rounded-lg text-xs font-mono text-zinc-100 placeholder-zinc-500 focus-visible:ring-2 focus-visible:ring-emerald-500 outline-none"></textarea>
+                    <button @onclick="AnalyzePastedList"
+                            disabled="@(string.IsNullOrWhiteSpace(pastedTrackList) || isLoading)"
+                            class="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-zinc-950 font-semibold text-xs rounded-lg transition-colors">
+                        Analyze Pasted Tracks
+                    </button>
+                </div>
+            </div>
+        }
+
+        <!-- Editorial Playlist Header (Full-width Ambient Wash) -->
+        <div class="relative overflow-hidden rounded-2xl bg-zinc-900/60 border border-white/5 p-6 sm:p-8">
+            <div class="absolute -top-24 -left-24 w-96 h-96 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none"></div>
+
+            <div class="relative z-10 flex flex-col sm:flex-row items-center sm:items-start gap-6">
+                <!-- Cover Art -->
+                <div class="w-36 h-36 sm:w-40 sm:h-40 rounded-xl overflow-hidden shadow-2xl bg-zinc-800 flex-shrink-0 border border-white/10">
+                    @if (!string.IsNullOrEmpty(dashboard.Playlist.CoverUrl))
+                    {
+                        <img src="@dashboard.Playlist.CoverUrl" alt="@dashboard.Playlist.Title cover" class="w-full h-full object-cover" />
+                    }
+                    else
+                    {
+                        <div class="w-full h-full flex items-center justify-center text-zinc-600">
+                            <svg class="w-12 h-12" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" />
+                            </svg>
+                        </div>
+                    }
+                </div>
+
+                <!-- Playlist Metadata & Stats -->
+                <div class="flex-1 text-center sm:text-left space-y-2">
+                    <div class="flex flex-wrap items-center justify-center sm:justify-start gap-2">
+                        <span class="px-2 py-0.5 rounded text-xs font-medium @GetPlatformBadgeClass(dashboard.Playlist.Platform)">
+                            @dashboard.Playlist.Platform
+                        </span>
+                        <span class="text-xs text-zinc-500 font-mono">Analyzed @dashboard.Playlist.AnalyzedAt.ToString("MMM d, yyyy")</span>
+                    </div>
+
+                    <h1 class="text-2xl sm:text-3xl lg:text-4xl font-bold tracking-tight text-white">
+                        @dashboard.Playlist.Title
+                    </h1>
+
+                    <!-- Inline Stat Strip -->
+                    <div class="flex flex-wrap items-center justify-center sm:justify-start gap-3 pt-2 text-xs sm:text-sm text-zinc-300 font-mono">
+                        <span class="inline-flex items-center gap-1.5 font-bold @GetScoreColor(dashboard.Diversity.TotalScore)">
+                            <span class="w-2 h-2 rounded-full bg-current"></span>
+                            <span>@dashboard.Diversity.TotalScore Diversity</span>
+                        </span>
+                        <span class="text-zinc-600">·</span>
+                        <span>@dashboard.Playlist.TrackCount Tracks</span>
+                        <span class="text-zinc-600">·</span>
+                        <span>@dashboard.Playlist.TotalDuration</span>
+                        <span class="text-zinc-600">·</span>
+                        <span>@GetDistinctGenreCount() Genres</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 2-Column Asymmetric Workspace -->
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+            <!-- Left 8 Columns: Searchable Tracklist Table -->
+            <div class="lg:col-span-8 space-y-4">
+                <!-- Search & Genre Filter Bar -->
+                <div class="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center justify-between">
+                    <div class="relative flex-1">
+                        <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-zinc-500">
+                            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                            </svg>
+                        </div>
+                        <input type="text"
+                               @bind="trackSearchQuery"
+                               @bind:event="oninput"
+                               placeholder="Filter tracks by title, artist, or album..."
+                               class="w-full pl-9 pr-3 py-1.5 bg-zinc-900 border border-white/10 rounded-md text-xs text-zinc-100 placeholder-zinc-500 focus-visible:ring-1 focus-visible:ring-emerald-500 outline-none" />
+                    </div>
+
+                    <!-- Genre filter pill tabs -->
+                    <div class="flex flex-wrap items-center gap-1.5">
+                        <button @onclick="() => selectedGenreFilter = null"
+                                class="px-2.5 py-1 text-xs rounded transition-colors @(selectedGenreFilter == null ? "bg-white/10 text-white font-medium" : "text-zinc-400 hover:text-white bg-zinc-900")">
+                            All
+                        </button>
+                        @foreach (var g in GetTopGenres(5))
+                        {
+                            <button @onclick="() => selectedGenreFilter = g"
+                                    class="px-2.5 py-1 text-xs rounded transition-colors @(selectedGenreFilter == g ? "bg-emerald-500/20 text-emerald-300 font-medium border border-emerald-500/30" : "text-zinc-400 hover:text-white bg-zinc-900")">
+                                @g
+                            </button>
+                        }
+                    </div>
+                </div>
+
+                <!-- Tracklist Table -->
+                <div class="overflow-hidden rounded-xl border border-white/5 bg-zinc-900/30">
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left text-xs">
+                            <thead class="border-b border-white/10 bg-zinc-900/80 text-zinc-400 uppercase tracking-wider text-[11px] font-semibold">
+                                <tr>
+                                    <th class="py-3 pl-4 pr-2 w-8 text-center">#</th>
+                                    <th class="py-3 px-4">Title & Artist</th>
+                                    <th class="py-3 px-4 hidden md:table-cell">Album</th>
+                                    <th class="py-3 px-4">Genre</th>
+                                    <th class="py-3 px-4 text-center hidden sm:table-cell">Year</th>
+                                    <th class="py-3 pr-4 pl-2 text-right">Time</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-white/5 font-sans">
+                                @{
+                                    var filteredTracks = GetFilteredTracks();
+                                }
+                                @if (filteredTracks.Count == 0)
+                                {
+                                    <tr>
+                                        <td colspan="6" class="py-8 text-center text-zinc-500">
+                                            No tracks match the filter.
+                                        </td>
+                                    </tr>
+                                }
+                                @for (int i = 0; i < filteredTracks.Count; i++)
+                                {
+                                    var track = filteredTracks[i];
+                                    <tr class="group hover:bg-white/[0.04] transition-colors">
+                                        <td class="py-3 pl-4 pr-2 text-center text-zinc-500 font-mono text-[11px]">
+                                            @(i + 1)
+                                        </td>
+                                        <td class="py-3 px-4">
+                                            <div class="flex items-center gap-3">
+                                                <div class="w-9 h-9 rounded bg-zinc-800 flex-shrink-0 overflow-hidden border border-white/5">
+                                                    @if (!string.IsNullOrEmpty(track.ArtworkUrl))
+                                                    {
+                                                        <img src="@track.ArtworkUrl" alt="@track.Title" class="w-full h-full object-cover" />
+                                                    }
+                                                    else
+                                                    {
+                                                        <div class="w-full h-full flex items-center justify-center text-zinc-600">
+                                                            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 19V6l12-3v13" />
+                                                            </svg>
+                                                        </div>
+                                                    }
+                                                </div>
+                                                <div class="min-w-0">
+                                                    <p class="font-medium text-white truncate max-w-[200px] sm:max-w-xs">@track.Title</p>
+                                                    <p class="text-zinc-400 text-[11px] truncate max-w-[200px] sm:max-w-xs">@track.Artist</p>
+                                                </div>
+                                            </div>
+                                        </td>
+                                        <td class="py-3 px-4 text-zinc-400 hidden md:table-cell truncate max-w-[150px]">
+                                            @(track.Album ?? "—")
+                                        </td>
+                                        <td class="py-3 px-4">
+                                            @if (!string.IsNullOrEmpty(track.Genre))
+                                            {
+                                                <span class="inline-block px-2 py-0.5 rounded-full bg-white/[0.06] text-zinc-300 text-[11px]">
+                                                    @track.Genre
+                                                </span>
+                                            }
+                                            else
+                                            {
+                                                <span class="text-zinc-600">—</span>
+                                            }
+                                        </td>
+                                        <td class="py-3 px-4 text-center text-zinc-400 font-mono text-[11px] hidden sm:table-cell">
+                                            @(track.ReleaseYear?.ToString() ?? "—")
+                                        </td>
+                                        <td class="py-3 pr-4 pl-2 text-right text-zinc-500 font-mono text-[11px]">
+                                            @FormatTrackDuration(track.DurationMs)
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right 4 Columns: Sticky Sidebar with Metrics & Suggested Tracks -->
+            <div class="lg:col-span-4 space-y-6 lg:sticky lg:top-20">
+                <!-- Diversity Scorecard -->
+                <div class="p-5 rounded-xl bg-zinc-900/60 border border-white/5 space-y-4">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs uppercase tracking-wider font-semibold text-zinc-400">Diversity Score</span>
+                        <span class="px-2 py-0.5 rounded text-xs font-bold @GetScoreColor(dashboard.Diversity.TotalScore)">
+                            @dashboard.Diversity.TotalScore / 100
+                        </span>
+                    </div>
+
+                    <div class="flex items-baseline gap-3">
+                        <span class="text-4xl font-black font-mono tracking-tight text-white">
+                            @dashboard.Diversity.TotalScore
+                        </span>
+                        <span class="text-xs text-zinc-400 leading-tight">
+                            @dashboard.Diversity.Summary
+                        </span>
+                    </div>
+
+                    <!-- 3 Metric Bars -->
+                    <div class="space-y-3 pt-2 border-t border-white/5 text-xs">
+                        <!-- Genre Variety (40%) -->
+                        <div class="space-y-1">
+                            <div class="flex justify-between text-zinc-400">
+                                <span>Genre Variety (40%)</span>
+                                <span class="font-mono text-zinc-200">@dashboard.Diversity.GenreVariety%</span>
+                            </div>
+                            <div class="h-1.5 w-full bg-zinc-800 rounded-full overflow-hidden">
+                                <div class="h-full bg-cyan-400 rounded-full transition-all duration-500" style="width: @(dashboard.Diversity.GenreVariety)%"></div>
+                            </div>
+                        </div>
+
+                        <!-- Artist Uniqueness (35%) -->
+                        <div class="space-y-1">
+                            <div class="flex justify-between text-zinc-400">
+                                <span>Artist Uniqueness (35%)</span>
+                                <span class="font-mono text-zinc-200">@dashboard.Diversity.ArtistUniqueness%</span>
+                            </div>
+                            <div class="h-1.5 w-full bg-zinc-800 rounded-full overflow-hidden">
+                                <div class="h-full bg-emerald-400 rounded-full transition-all duration-500" style="width: @(dashboard.Diversity.ArtistUniqueness)%"></div>
+                            </div>
+                        </div>
+
+                        <!-- Era Spread (25%) -->
+                        <div class="space-y-1">
+                            <div class="flex justify-between text-zinc-400">
+                                <span>Era Spread (25%)</span>
+                                <span class="font-mono text-zinc-200">@dashboard.Diversity.EraSpread%</span>
+                            </div>
+                            <div class="h-1.5 w-full bg-zinc-800 rounded-full overflow-hidden">
+                                <div class="h-full bg-purple-400 rounded-full transition-all duration-500" style="width: @(dashboard.Diversity.EraSpread)%"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Genre Distribution Breakdown -->
+                <div class="p-5 rounded-xl bg-zinc-900/60 border border-white/5 space-y-3">
+                    <span class="text-xs uppercase tracking-wider font-semibold text-zinc-400 block">Genre Distribution</span>
+                    <div class="space-y-2 text-xs">
+                        @foreach (var genreStat in GetGenreDistribution(5))
+                        {
+                            <div class="space-y-1">
+                                <div class="flex justify-between text-zinc-300">
+                                    <span class="truncate pr-2">@genreStat.Genre</span>
+                                    <span class="font-mono text-zinc-500">@genreStat.Percentage%</span>
+                                </div>
+                                <div class="h-1 w-full bg-zinc-800 rounded-full overflow-hidden">
+                                    <div class="h-full bg-white/40 rounded-full" style="width: @(genreStat.Percentage)%"></div>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                </div>
+
+                <!-- Suggested Music to Add -->
+                <div class="p-5 rounded-xl bg-zinc-900/60 border border-white/5 space-y-4">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs uppercase tracking-wider font-semibold text-zinc-400">Suggested to Expand</span>
+                        <span class="text-[11px] text-zinc-500 font-mono">Live iTunes</span>
+                    </div>
+
+                    @if (dashboard.Recommendations.Count == 0)
+                    {
+                        <p class="text-xs text-zinc-500 py-4 text-center">No additional suggestions available for this set.</p>
+                    }
+                    else
+                    {
+                        <div class="space-y-3">
+                            @foreach (var rec in dashboard.Recommendations)
+                            {
+                                bool isSaved = savedTrackTitles.Contains(rec.Title);
+                                bool isPlaying = currentPlayingPreview == rec.PreviewUrl && !string.IsNullOrEmpty(rec.PreviewUrl);
+
+                                <div class="p-3 rounded-lg bg-zinc-950/50 border border-white/5 hover:border-white/10 transition-colors flex items-center justify-between gap-3 group">
+                                    <div class="flex items-center gap-3 min-w-0">
+                                        <!-- Artwork with Preview Play Button -->
+                                        <div class="relative w-10 h-10 rounded overflow-hidden bg-zinc-800 flex-shrink-0">
+                                            @if (!string.IsNullOrEmpty(rec.ArtworkUrl))
+                                            {
+                                                <img src="@rec.ArtworkUrl" alt="@rec.Title" class="w-full h-full object-cover" />
+                                            }
+                                            @if (!string.IsNullOrEmpty(rec.PreviewUrl))
+                                            {
+                                                <button @onclick="() => TogglePreview(rec.PreviewUrl)"
+                                                        class="absolute inset-0 bg-black/60 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity @(isPlaying ? "opacity-100 bg-emerald-950/80" : "")">
+                                                    @if (isPlaying)
+                                                    {
+                                                        <svg class="w-4 h-4 text-emerald-400 animate-pulse" fill="currentColor" viewBox="0 0 24 24">
+                                                            <rect x="6" y="4" width="4" height="16" rx="1" />
+                                                            <rect x="14" y="4" width="4" height="16" rx="1" />
+                                                        </svg>
+                                                    }
+                                                    else
+                                                    {
+                                                        <svg class="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 24 24">
+                                                            <polygon points="5 3 19 12 5 21 5 3" />
+                                                        </svg>
+                                                    }
+                                                </button>
+                                            }
+                                        </div>
+
+                                        <div class="min-w-0">
+                                            <p class="text-xs font-medium text-white truncate max-w-[140px] sm:max-w-[180px]">@rec.Title</p>
+                                            <p class="text-[11px] text-zinc-400 truncate max-w-[140px] sm:max-w-[180px]">@rec.Artist</p>
+                                            <span class="inline-block text-[10px] text-zinc-500 font-mono mt-0.5">@rec.Genre</span>
+                                        </div>
+                                    </div>
+
+                                    <!-- Action Buttons: Copy & Bookmark -->
+                                    <div class="flex items-center gap-1.5 flex-shrink-0">
+                                        <!-- Copy button -->
+                                        <button @onclick="() => CopyTrack(rec)"
+                                                title="Copy Title — Artist"
+                                                class="p-1.5 rounded hover:bg-white/10 text-zinc-400 hover:text-white transition-colors">
+                                            @if (copiedTrackTitle == rec.Title)
+                                            {
+                                                <svg class="w-3.5 h-3.5 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                                                </svg>
+                                            }
+                                            else
+                                            {
+                                                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                                                </svg>
+                                            }
+                                        </button>
+
+                                        <!-- Bookmark button -->
+                                        <button @onclick="() => ToggleBookmark(rec)"
+                                                title="@(isSaved ? "Saved in Bookmarks" : "Bookmark this suggestion")"
+                                                class="p-1.5 rounded hover:bg-white/10 transition-colors @(isSaved ? "text-emerald-400" : "text-zinc-400 hover:text-white")">
+                                            <svg class="w-3.5 h-3.5" fill="@(isSaved ? "currentColor" : "none")" viewBox="0 0 24 24" stroke="currentColor">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
+                                            </svg>
+                                        </button>
+                                    </div>
+                                </div>
+                            }
+                        </div>
+                    }
+                </div>
+            </div>
+        </div>
+    }
+    else
+    {
+        <!-- Empty / Idle Hero Showcase -->
+        <div class="py-12 sm:py-20 text-center space-y-6 max-w-2xl mx-auto">
+            <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-mono">
+                <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                <span>Playlist Analyzer</span>
+            </div>
+
+            <h2 class="text-3xl sm:text-5xl font-extrabold tracking-tight text-white leading-tight">
+                Inspect genre balance, artist variety, and track diversity.
+            </h2>
+
+            <p class="text-sm sm:text-base text-zinc-400 leading-relaxed">
+                Paste any public link from Spotify, Apple Music, or YouTube Music. TuneTrack detects the platform, calculates Shannon entropy metrics, and recommends complementary music.
+            </p>
+
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-6 text-left">
+                <div class="p-4 rounded-xl bg-zinc-900/50 border border-white/5 space-y-1.5">
+                    <span class="text-emerald-400 text-sm font-semibold">1. Paste Link</span>
+                    <p class="text-xs text-zinc-400">Supports Spotify embed, Apple Music JSON-LD, and YouTube Music playlists.</p>
+                </div>
+                <div class="p-4 rounded-xl bg-zinc-900/50 border border-white/5 space-y-1.5">
+                    <span class="text-cyan-400 text-sm font-semibold">2. Score Diversity</span>
+                    <p class="text-xs text-zinc-400">Weighted score across genre variety, artist uniqueness, and decade spread.</p>
+                </div>
+                <div class="p-4 rounded-xl bg-zinc-900/50 border border-white/5 space-y-1.5">
+                    <span class="text-purple-400 text-sm font-semibold">3. Expand Palette</span>
+                    <p class="text-xs text-zinc-400">Real tailored track suggestions from iTunes with playable 30-sec previews.</p>
+                </div>
+            </div>
+        </div>
+    }
 </div>
+
+@code {
+    [SupplyParameterFromQuery]
+    public int? Id { get; set; }
+
+    private string inputUrl = "";
+    private string? errorMessage;
+    private bool isLoading;
+    private string clientId = "";
+    private AnalysisDashboardData? dashboard;
+
+    // Tracklist filtering & sorting
+    private string trackSearchQuery = "";
+    private string? selectedGenreFilter;
+
+    // Audio preview & interaction
+    private string? currentPlayingPreview;
+    private string? copiedTrackTitle;
+    private HashSet<string> savedTrackTitles = new(StringComparer.OrdinalIgnoreCase);
+
+    // Partial result fallback paste
+    private bool showPasteFallback;
+    private string pastedTrackList = "";
+
+    private string DetectedPlatform
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(inputUrl)) return "";
+            string lower = inputUrl.ToLowerInvariant();
+            if (lower.Contains("spotify.com")) return "Spotify";
+            if (lower.Contains("music.apple.com")) return "Apple Music";
+            if (lower.Contains("youtube.com") || lower.Contains("youtu.be")) return "YouTube Music";
+            return "";
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            try
+            {
+                clientId = await JS.InvokeAsync<string>("tuneTrack.getClientId");
+                await LoadSavedTrackState();
+
+                // If launched with an ID from History, reload it
+                if (Id.HasValue && Id.Value > 0)
+                {
+                    await LoadPlaylistFromHistory(Id.Value);
+                }
+
+                StateHasChanged();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error during client init: {ex.Message}");
+            }
+        }
+    }
+
+    private async Task HandleKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && !isLoading && !string.IsNullOrWhiteSpace(inputUrl))
+        {
+            await AnalyzeEnteredUrl();
+        }
+    }
+
+    private async Task AnalyzeEnteredUrl()
+    {
+        if (string.IsNullOrWhiteSpace(inputUrl)) return;
+
+        isLoading = true;
+        errorMessage = null;
+        showPasteFallback = false;
+        dashboard = null;
+
+        try
+        {
+            dashboard = await PlaylistService.AnalyzeUrlAsync(inputUrl.Trim(), clientId);
+            if (dashboard.IsPartialResult)
+            {
+                showPasteFallback = true;
+            }
+        }
+        catch (Exception ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task LoadSample(string sampleId)
+    {
+        isLoading = true;
+        errorMessage = null;
+        showPasteFallback = false;
+        dashboard = null;
+
+        try
+        {
+            dashboard = await PlaylistService.AnalyzeSampleAsync(sampleId, clientId);
+        }
+        catch (Exception ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task AnalyzePastedList()
+    {
+        if (string.IsNullOrWhiteSpace(pastedTrackList) || dashboard == null) return;
+
+        isLoading = true;
+        errorMessage = null;
+
+        try
+        {
+            dashboard = await PlaylistService.AnalyzeManualTrackListAsync(
+                title: dashboard.Playlist.Title,
+                platform: dashboard.Playlist.Platform,
+                coverUrl: dashboard.Playlist.CoverUrl,
+                rawTrackList: pastedTrackList,
+                clientId: clientId
+            );
+            showPasteFallback = false;
+        }
+        catch (Exception ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task LoadPlaylistFromHistory(int playlistId)
+    {
+        isLoading = true;
+        try
+        {
+            var playlist = await PlaylistService.GetPlaylistByIdAsync(playlistId, clientId);
+            if (playlist != null)
+            {
+                var tracks = playlist.Tracks.ToList();
+                var diversity = new DiversityScoreResult(
+                    TotalScore: playlist.DiversityScore,
+                    GenreVariety: playlist.GenreVariety,
+                    ArtistUniqueness: playlist.ArtistUniqueness,
+                    EraSpread: playlist.EraSpread,
+                    Summary: "Loaded from historical analysis."
+                );
+
+                dashboard = new AnalysisDashboardData(
+                    Playlist: playlist,
+                    Diversity: diversity,
+                    Recommendations: new List<TrackSuggestion>(),
+                    IsPartialResult: false,
+                    WarningMessage: null
+                );
+            }
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task LoadSavedTrackState()
+    {
+        if (string.IsNullOrWhiteSpace(clientId)) return;
+        var saved = await PlaylistService.GetSavedRecommendationsAsync(clientId);
+        savedTrackTitles = saved.Select(s => s.Title).ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private async Task TogglePreview(string? previewUrl)
+    {
+        if (string.IsNullOrEmpty(previewUrl)) return;
+
+        if (currentPlayingPreview == previewUrl)
+        {
+            currentPlayingPreview = null;
+            await JS.InvokeVoidAsync("tuneTrack.stopAudio");
+        }
+        else
+        {
+            currentPlayingPreview = previewUrl;
+            var dotNetRef = DotNetObjectReference.Create(this);
+            await JS.InvokeVoidAsync("tuneTrack.togglePreview", previewUrl, dotNetRef);
+        }
+    }
+
+    [JSInvokable]
+    public void OnAudioStopped()
+    {
+        currentPlayingPreview = null;
+        StateHasChanged();
+    }
+
+    private async Task CopyTrack(TrackSuggestion rec)
+    {
+        string text = $"{rec.Title} — {rec.Artist}";
+        bool success = await JS.InvokeAsync<bool>("tuneTrack.copyToClipboard", text);
+        if (success)
+        {
+            copiedTrackTitle = rec.Title;
+            StateHasChanged();
+            await Task.Delay(1500);
+            if (copiedTrackTitle == rec.Title)
+            {
+                copiedTrackTitle = null;
+                StateHasChanged();
+            }
+        }
+    }
+
+    private async Task ToggleBookmark(TrackSuggestion rec)
+    {
+        if (string.IsNullOrWhiteSpace(clientId)) return;
+
+        if (savedTrackTitles.Contains(rec.Title))
+        {
+            // Remove
+            var saved = await PlaylistService.GetSavedRecommendationsAsync(clientId);
+            var item = saved.FirstOrDefault(s => s.Title.Equals(rec.Title, StringComparison.OrdinalIgnoreCase));
+            if (item != null)
+            {
+                await PlaylistService.RemoveSavedRecommendationAsync(item.Id, clientId);
+                savedTrackTitles.Remove(rec.Title);
+            }
+        }
+        else
+        {
+            // Save
+            await PlaylistService.SaveRecommendationAsync(clientId, rec, dashboard?.Playlist.Id);
+            savedTrackTitles.Add(rec.Title);
+        }
+        StateHasChanged();
+    }
+
+    private List<AnalyzedTrack> GetFilteredTracks()
+    {
+        if (dashboard?.Playlist?.Tracks == null) return new List<AnalyzedTrack>();
+
+        var query = dashboard.Playlist.Tracks.AsEnumerable();
+
+        if (!string.IsNullOrWhiteSpace(trackSearchQuery))
+        {
+            string q = trackSearchQuery.Trim();
+            query = query.Where(t =>
+                t.Title.Contains(q, StringComparison.OrdinalIgnoreCase) ||
+                t.Artist.Contains(q, StringComparison.OrdinalIgnoreCase) ||
+                (t.Album != null && t.Album.Contains(q, StringComparison.OrdinalIgnoreCase)));
+        }
+
+        if (!string.IsNullOrWhiteSpace(selectedGenreFilter))
+        {
+            query = query.Where(t => t.Genre != null && t.Genre.Equals(selectedGenreFilter, StringComparison.OrdinalIgnoreCase));
+        }
+
+        return query.ToList();
+    }
+
+    private List<string> GetTopGenres(int limit)
+    {
+        if (dashboard?.Playlist?.Tracks == null) return new List<string>();
+
+        return dashboard.Playlist.Tracks
+            .Select(t => t.Genre?.Trim())
+            .Where(g => !string.IsNullOrWhiteSpace(g))
+            .GroupBy(g => g!)
+            .OrderByDescending(g => g.Count())
+            .Select(g => g.Key)
+            .Take(limit)
+            .ToList();
+    }
+
+    private record GenreStat(string Genre, int Percentage);
+
+    private List<GenreStat> GetGenreDistribution(int limit)
+    {
+        if (dashboard?.Playlist?.Tracks == null || dashboard.Playlist.Tracks.Count == 0) return new List<GenreStat>();
+
+        var withGenre = dashboard.Playlist.Tracks
+            .Select(t => t.Genre?.Trim())
+            .Where(g => !string.IsNullOrWhiteSpace(g))
+            .ToList();
+
+        if (withGenre.Count == 0) return new List<GenreStat>();
+
+        int total = withGenre.Count;
+        return withGenre
+            .GroupBy(g => g!)
+            .OrderByDescending(g => g.Count())
+            .Take(limit)
+            .Select(g => new GenreStat(g.Key, (int)Math.Round((double)g.Count() / total * 100)))
+            .ToList();
+    }
+
+    private int GetDistinctGenreCount()
+    {
+        if (dashboard?.Playlist?.Tracks == null) return 0;
+        return dashboard.Playlist.Tracks
+            .Select(t => t.Genre?.Trim())
+            .Where(g => !string.IsNullOrWhiteSpace(g))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count();
+    }
+
+    private static string GetPlatformBadgeClass(string platform)
+    {
+        return platform switch
+        {
+            "Spotify" => "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20",
+            "Apple Music" => "bg-rose-500/10 text-rose-400 border border-rose-500/20",
+            "YouTube Music" => "bg-red-500/10 text-red-400 border border-red-500/20",
+            _ => "bg-zinc-800 text-zinc-300 border border-white/5"
+        };
+    }
+
+    private static string GetScoreColor(double score)
+    {
+        return score switch
+        {
+            >= 80 => "text-emerald-400",
+            >= 60 => "text-cyan-400",
+            >= 40 => "text-amber-400",
+            _ => "text-rose-400"
+        };
+    }
+
+    private static string FormatTrackDuration(int durationMs)
+    {
+        if (durationMs <= 0) return "—";
+        var ts = TimeSpan.FromMilliseconds(durationMs);
+        return $"{(int)ts.TotalMinutes}:{ts.Seconds:D2}";
+    }
+}

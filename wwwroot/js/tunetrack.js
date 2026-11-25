@@ -75,5 +75,24 @@ window.tuneTrack = {
             this.audioElement = null;
             this.currentUrl = null;
         }
+    },
+
+    formatLocalDates: function (isoStrings) {
+        var formatter = new Intl.DateTimeFormat(undefined, {
+            month: 'short',
+            day: 'numeric',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit'
+        });
+        return (isoStrings || []).map(function (iso) {
+            try {
+                var d = new Date(iso);
+                if (isNaN(d.getTime())) return iso;
+                return formatter.format(d);
+            } catch (e) {
+                return iso;
+            }
+        });
     }
 };

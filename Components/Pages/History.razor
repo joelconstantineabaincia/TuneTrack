@@ -57,7 +57,7 @@
             @foreach (var item in historyItems)
             {
                 <div class="p-4 rounded-xl bg-zinc-900/40 border border-white/5 hover:border-white/10 transition-colors flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 group">
-                    <div class="flex items-center gap-4 min-w-0">
+                    <div class="flex items-center gap-4 min-w-0 w-full flex-1">
                         <!-- Cover Art -->
                         <div class="w-14 h-14 rounded-lg bg-zinc-800 overflow-hidden flex-shrink-0 border border-white/10">
                             @if (!string.IsNullOrEmpty(item.CoverUrl))
@@ -76,25 +76,24 @@
 
                         <!-- Title and Info -->
                         <div class="min-w-0 space-y-1">
-                            <div class="flex items-center gap-2">
-                                <span class="px-2 py-0.5 rounded text-[11px] font-medium @GetPlatformBadgeClass(item.Platform)">
+                            <div class="flex flex-wrap items-center gap-2">
+                                <span class="px-2 py-0.5 rounded text-[11px] font-medium whitespace-nowrap @GetPlatformBadgeClass(item.Platform)">
                                     @item.Platform
                                 </span>
-                                <span class="text-xs text-zinc-500 font-mono">
-                                    @item.AnalyzedAt.ToString("MMM d, yyyy · HH:mm")
-                                </span>
+                                <time datetime="@DateTime.SpecifyKind(item.AnalyzedAt, DateTimeKind.Utc).ToString("O")"
+                                      class="text-xs text-zinc-400 font-mono">
+                                    @(formattedLocalDates.TryGetValue(item.Id, out var localDate) ? localDate : DateTime.SpecifyKind(item.AnalyzedAt, DateTimeKind.Utc).ToString("MMM d, yyyy · HH:mm 'UTC'"))
+                                </time>
                             </div>
-                            <h2 class="text-sm font-semibold text-white truncate max-w-sm sm:max-w-md">
+                            <h2 class="text-sm font-semibold text-white truncate max-w-full sm:max-w-md">
                                 @item.Title
                             </h2>
-                            <div class="flex items-center gap-3 text-xs text-zinc-400 font-mono">
-                                <span class="font-bold @GetScoreColor(item.DiversityScore)">
-                                    @item.DiversityScore Diversity
+                            <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-zinc-400 font-mono tabular-nums">
+                                <span class="font-bold whitespace-nowrap @GetScoreColor(item.DiversityScore)">
+                                    @FormatWholeScore(item.DiversityScore) Diversity
                                 </span>
-                                <span class="text-zinc-600">·</span>
-                                <span>@item.TrackCount Tracks</span>
-                                <span class="text-zinc-600">·</span>
-                                <span>@item.TotalDuration</span>
+                                <span class="whitespace-nowrap">@item.TrackCount @(item.TrackCount == 1 ? "Track" : "Tracks")</span>
+                                <span class="whitespace-nowrap">@item.TotalDuration</span>
                             </div>
                         </div>
                     </div>
@@ -128,6 +127,7 @@
     private bool isLoading = true;
     private string clientId = "";
     private List<AnalyzedPlaylist> historyItems = new();
+    private Dictionary<int, string> formattedLocalDates = new();
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
@@ -150,6 +150,18 @@
     {
         if (string.IsNullOrWhiteSpace(clientId)) return;
         historyItems = await PlaylistService.GetHistoryAsync(clientId);
+        formattedLocalDates.Clear();
+        if (historyItems.Count > 0)
+        {
+            var isoDates = historyItems
+                .Select(h => DateTime.SpecifyKind(h.AnalyzedAt, DateTimeKind.Utc).ToString("O"))
+                .ToArray();
+            var localDates = await JS.InvokeAsync<string[]>("tuneTrack.formatLocalDates", (object)isoDates);
+            for (int i = 0; i < historyItems.Count && i < localDates.Length; i++)
+            {
+                formattedLocalDates[historyItems[i].Id] = localDates[i];
+            }
+        }
     }
 
     private async Task DeleteHistory(int id)
@@ -159,9 +171,13 @@
         if (deleted)
         {
             historyItems.RemoveAll(h => h.Id == id);
+            formattedLocalDates.Remove(id);
             StateHasChanged();
         }
     }
+
+    private static string FormatWholeScore(double score) =>
+        Math.Round(score, MidpointRounding.AwayFromZero).ToString("0");
 
     private static string GetPlatformBadgeClass(string platform)
     {
@@ -170,6 +186,7 @@
             "Spotify" => "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20",
             "Apple Music" => "bg-rose-500/10 text-rose-400 border border-rose-500/20",
             "YouTube Music" => "bg-red-500/10 text-red-400 border border-red-500/20",
+            "Sample" => "bg-zinc-800 text-zinc-200 border border-white/15",
             _ => "bg-zinc-800 text-zinc-300 border border-white/5"
         };
     }

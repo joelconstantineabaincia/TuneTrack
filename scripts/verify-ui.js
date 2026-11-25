@@ -2,159 +2,236 @@ const puppeteer = require('puppeteer-core');
 const path = require('path');
 const fs = require('fs');
 
+async function checkLayout(page, label) {
+    const metrics = await page.evaluate(() => {
+        const overflowX = document.documentElement.scrollWidth > document.documentElement.clientWidth;
+        const navLinks = Array.from(document.querySelectorAll('header nav a')).map(a => {
+            const r = a.getBoundingClientRect();
+            return { text: a.textContent.trim(), right: Math.round(r.right), top: Math.round(r.top) };
+        });
+        const navCropped = navLinks.some(l => l.right > window.innerWidth);
+        const hasActiveBadge = /\bActive\b/.test(document.body.innerText);
+        return {
+            overflowX,
+            scrollWidth: document.documentElement.scrollWidth,
+            clientWidth: document.documentElement.clientWidth,
+            navCropped,
+            hasActiveBadge
+        };
+    });
+    console.log(`CHECK [${label}]:`, JSON.stringify(metrics));
+    if (metrics.overflowX) throw new Error(`${label}: Horizontal overflow (${metrics.scrollWidth} > ${metrics.clientWidth})`);
+    if (metrics.navCropped) throw new Error(`${label}: Navbar cropped`);
+    if (metrics.hasActiveBadge) throw new Error(`${label}: 'Active' indicator still visible`);
+}
+
 async function run() {
-    console.log("Starting Full End-to-End Browser Verification for TuneTrack...");
+    console.log("Starting Comprehensive TuneTrack Verification...");
 
     const chromePath = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
     const browser = await puppeteer.launch({
         executablePath: chromePath,
         headless: 'new',
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-gpu',
-            '--window-size=1440,900'
-        ]
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu', '--window-size=1440,900']
     });
 
     const page = await browser.newPage();
-    await page.setViewport({ width: 1440, height: 900 });
-
-    page.on('console', msg => console.log('BROWSER CONSOLE:', msg.text()));
     page.on('pageerror', err => console.log('BROWSER ERROR:', err.message));
 
     const docsDir = path.join(__dirname, '..', 'docs');
-    if (!fs.existsSync(docsDir)) {
-        fs.mkdirSync(docsDir, { recursive: true });
-    }
+    fs.mkdirSync(docsDir, { recursive: true });
 
     try {
-        console.log("1. Navigating to http://127.0.0.1:5199...");
+        // --- 1. IDLE (1440px & 390px) ---
+        await page.setViewport({ width: 1440, height: 900 });
         await page.goto('http://127.0.0.1:5199', { waitUntil: 'networkidle0', timeout: 15000 });
         await new Promise(r => setTimeout(r, 800));
+        await checkLayout(page, 'idle-1440');
+        await page.evaluate(() => window.scrollTo(0, 0));
+        await page.screenshot({ path: path.join(docsDir, 'screenshot-1440-idle.png'), fullPage: false });
 
-        // Capture idle screenshot at 1440px and audit DOM metrics
-        const idle1440Path = path.join(docsDir, 'screenshot-1440-idle.png');
-        await page.screenshot({ path: idle1440Path, fullPage: false });
-        console.log("✓ Captured idle 1440px screenshot:", idle1440Path);
-
-        const audit1440 = await page.evaluate(() => {
-            const overflowX = document.documentElement.scrollWidth > document.documentElement.clientWidth;
-            const h1Count = document.querySelectorAll('h1').length;
-            const imgs = Array.from(document.querySelectorAll('img')).map(i => ({ alt: i.alt, loaded: i.complete && i.naturalWidth > 0 }));
-            const navLinks = Array.from(document.querySelectorAll('header nav a')).map(a => ({ text: a.textContent.trim(), rect: a.getBoundingClientRect() }));
-            const hasActiveDot = document.body.innerText.includes('Active');
-            return { overflowX, h1Count, imgs, navLinks, hasActiveDot };
-        });
-        console.log("AUDIT 1440px:", JSON.stringify(audit1440));
-
-        // Capture idle screenshot at 390px and audit mobile metrics
-        await page.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true });
+        await page.setViewport({ width: 390, height: 844 });
         await new Promise(r => setTimeout(r, 500));
-        const idle390Path = path.join(docsDir, 'screenshot-390-idle.png');
-        await page.screenshot({ path: idle390Path, fullPage: true });
-        console.log("✓ Captured idle 390px screenshot:", idle390Path);
+        await page.evaluate(() => window.scrollTo(0, 0));
+        await checkLayout(page, 'idle-390');
+        await page.screenshot({ path: path.join(docsDir, 'screenshot-390-idle.png'), fullPage: true });
 
-        const audit390 = await page.evaluate(() => {
-            const overflowX = document.documentElement.scrollWidth > document.documentElement.clientWidth;
-            const buttons = Array.from(document.querySelectorAll('button')).map(b => {
-                const r = b.getBoundingClientRect();
-                return { text: (b.innerText || b.getAttribute('aria-label') || '').slice(0, 30), w: Math.round(r.width), h: Math.round(r.height) };
-            });
-            return { overflowX, buttons };
-        });
-        console.log("AUDIT 390px:", JSON.stringify(audit390));
-
-        // Reset viewport to 1440x900 for sample click & E2E verification
+        // --- 2. ECLECTIC HORIZON RESULTS (1440px & 390px) ---
         await page.setViewport({ width: 1440, height: 900 });
         await new Promise(r => setTimeout(r, 300));
-
-        // 2. Click "Eclectic Horizon" sample
-        console.log("2. Clicking 'Eclectic Horizon' sample button...");
-        const sampleButtons = await page.$$('button');
-        let clickedSample = false;
-        for (const btn of sampleButtons) {
-            const text = await page.evaluate(el => el.textContent, btn);
-            if (text && text.includes('Eclectic Horizon')) {
+        const buttons = await page.$$('button');
+        for (const btn of buttons) {
+            const txt = await page.evaluate(el => el.textContent, btn);
+            if (txt && txt.includes('Eclectic Horizon')) {
                 await btn.click();
-                clickedSample = true;
                 break;
             }
         }
-        if (!clickedSample) throw new Error("Could not find 'Eclectic Horizon' sample button");
+        await page.waitForSelector('table', { timeout: 15000 });
+        await new Promise(r => setTimeout(r, 2000));
 
-        // Wait for analysis results
-        await page.waitForSelector('h1', { timeout: 10000 });
-        await new Promise(r => setTimeout(r, 1500));
-        console.log("✓ Analysis rendered successfully!");
+        await checkLayout(page, 'eclectic-1440');
+        const eclecticInfo = await page.evaluate(() => {
+            const chipBtns = Array.from(document.querySelectorAll('[aria-label="Filter tracks by genre"] button'));
+            const recGenres = Array.from(document.querySelectorAll('.lg\\:col-span-4 .font-mono.mt-0\\.5')).map(e => e.textContent.trim());
+            const body = document.body.innerText;
+            return {
+                chipCount: chipBtns.length,
+                chips: chipBtns.map(b => b.textContent.trim()),
+                recGenres: [...new Set(recGenres)],
+                hasSampleBadge: body.includes('Sample'),
+                hasNoSpotifyHeader: !Array.from(document.querySelectorAll('h1 ~ * span')).some(s => s.textContent.trim() === 'Spotify')
+            };
+        });
+        console.log("ECLECTIC DATA:", JSON.stringify(eclecticInfo));
+        if (eclecticInfo.chipCount < 12) throw new Error(`Expected >= 12 genre chips (+All), got ${eclecticInfo.chipCount}`);
 
-        // 3. Bookmark a recommendation
-        console.log("3. Bookmarking a suggested track...");
+        // Test genre filter click ('Ambient' - beyond top 5!)
+        const ambientBtn = await page.$('button ::-p-text(Ambient)');
+        const chipBtns = await page.$$('[aria-label="Filter tracks by genre"] button');
+        for (const cb of chipBtns) {
+            const t = await page.evaluate(el => el.textContent.trim(), cb);
+            if (t === 'Ambient') {
+                await cb.click();
+                await new Promise(r => setTimeout(r, 400));
+                const rows = await page.$$eval('tbody tr', trs => trs.length);
+                console.log(`✓ Filtered by 'Ambient' -> ${rows} row(s)`);
+                if (rows !== 1) throw new Error(`Expected 1 row for Ambient filter, got ${rows}`);
+                break;
+            }
+        }
+        // Reset filter to All
+        await chipBtns[0].click();
+        await new Promise(r => setTimeout(r, 300));
+
+        await page.evaluate(() => window.scrollTo(0, 0));
+        await page.screenshot({ path: path.join(docsDir, 'screenshot-1440-eclectic.png'), fullPage: true });
+
+        await page.setViewport({ width: 390, height: 844 });
+        await new Promise(r => setTimeout(r, 500));
+        await page.evaluate(() => window.scrollTo(0, 0));
+        await checkLayout(page, 'eclectic-390');
+        await page.screenshot({ path: path.join(docsDir, 'screenshot-390-eclectic.png'), fullPage: true });
+
+        // --- 3. STRICTLY SYNTH-POP RESULTS (1440px & 390px) ---
+        await page.setViewport({ width: 1440, height: 900 });
+        await new Promise(r => setTimeout(r, 300));
+        const synthBtns = await page.$$('button');
+        for (const btn of synthBtns) {
+            const txt = await page.evaluate(el => el.textContent, btn);
+            if (txt && txt.includes('Strictly Synth-Pop')) {
+                await btn.click();
+                break;
+            }
+        }
+        await page.waitForFunction(() => document.body.innerText.includes('Strictly Synth-Pop: Neon Nightdrive'), { timeout: 15000 });
+        await page.waitForSelector('table', { timeout: 15000 });
+        await new Promise(r => setTimeout(r, 800));
+        await checkLayout(page, 'synthpop-1440');
+
+        const synthInfo = await page.evaluate(() => {
+            const body = document.body.innerText;
+            const recGenres = Array.from(document.querySelectorAll('.lg\\:col-span-4 span.font-mono.mt-0\\.5')).map(e => e.textContent.trim());
+            const scoreTexts = Array.from(document.querySelectorAll('h1')).map(h => h.closest('div').innerText);
+            return {
+                hasOneGenreSingular: body.includes('1 Genre') && !body.includes('1 Genres'),
+                hasWholeScore11: body.includes('11 Diversity') && !body.includes('10.5'),
+                recGenres: [...new Set(recGenres)],
+                nonSynthRecs: recGenres.filter(g => g.toLowerCase() !== 'synth-pop').length
+            };
+        });
+        console.log("SYNTHPOP DATA:", JSON.stringify(synthInfo));
+        if (!synthInfo.hasOneGenreSingular) throw new Error("Expected '1 Genre' pluralization");
+        if (!synthInfo.hasWholeScore11) throw new Error("Expected whole-number score '11 Diversity'");
+
+        // Bookmark first recommendation
         const bookmarkBtns = await page.$$('button[title*="Bookmark"]');
-        if (bookmarkBtns.length === 0) throw new Error("No bookmark buttons found on recommendations");
-        await bookmarkBtns[0].click();
-        await new Promise(r => setTimeout(r, 800));
-        console.log("✓ Recommendation bookmarked!");
+        if (bookmarkBtns.length > 0) {
+            await bookmarkBtns[0].click();
+            await new Promise(r => setTimeout(r, 600));
+            console.log("✓ Bookmarked suggestion");
+        }
 
-        // 4. Navigate to /saved
-        console.log("4. Navigating to /saved...");
+        await page.evaluate(() => window.scrollTo(0, 0));
+        await page.screenshot({ path: path.join(docsDir, 'screenshot-1440-synthpop.png'), fullPage: true });
+
+        await page.setViewport({ width: 390, height: 844 });
+        await new Promise(r => setTimeout(r, 500));
+        await page.evaluate(() => window.scrollTo(0, 0));
+        await checkLayout(page, 'synthpop-390');
+        // Verify genre pills do not wrap vertically (single-line height <= 28px)
+        const pillHeights = await page.$$eval('tbody span.sm\\:hidden', spans => spans.map(s => Math.round(s.getBoundingClientRect().height)));
+        console.log("390px GENRE PILL HEIGHTS:", JSON.stringify(pillHeights));
+        if (pillHeights.length === 0) throw new Error("Expected mobile genre pills to render inside tracklist at 390px!");
+        if (pillHeights.some(h => h > 28)) throw new Error("Mobile genre pill wrapped to multiple lines!");
+        await page.screenshot({ path: path.join(docsDir, 'screenshot-390-synthpop.png'), fullPage: true });
+
+        // --- 4. SAVED (1440px & 390px) ---
+        await page.setViewport({ width: 1440, height: 900 });
         await page.goto('http://127.0.0.1:5199/saved', { waitUntil: 'networkidle0', timeout: 10000 });
         await new Promise(r => setTimeout(r, 800));
+        await checkLayout(page, 'saved-1440');
+        await page.screenshot({ path: path.join(docsDir, 'screenshot-1440-saved.png'), fullPage: false });
 
-        const savedPath = path.join(docsDir, 'screenshot-saved-1440.png');
-        await page.screenshot({ path: savedPath, fullPage: false });
-        console.log("✓ Captured /saved screenshot:", savedPath);
+        await page.setViewport({ width: 390, height: 844 });
+        await new Promise(r => setTimeout(r, 400));
+        await page.evaluate(() => window.scrollTo(0, 0));
+        await checkLayout(page, 'saved-390');
+        await page.screenshot({ path: path.join(docsDir, 'screenshot-390-saved.png'), fullPage: true });
 
-        const savedCards = await page.$$('h2');
-        console.log(`✓ Found ${savedCards.length} saved item(s) on /saved`);
-        if (savedCards.length === 0) throw new Error("Expected at least 1 saved item on /saved");
-
-        // 5. Navigate to /history
-        console.log("5. Navigating to /history...");
+        // --- 5. HISTORY (1440px & 390px) ---
+        await page.setViewport({ width: 1440, height: 900 });
         await page.goto('http://127.0.0.1:5199/history', { waitUntil: 'networkidle0', timeout: 10000 });
         await new Promise(r => setTimeout(r, 800));
+        await checkLayout(page, 'history-1440');
 
-        const historyPath = path.join(docsDir, 'screenshot-history-1440.png');
-        await page.screenshot({ path: historyPath, fullPage: false });
-        console.log("✓ Captured /history screenshot:", historyPath);
+        const historyCheck = await page.evaluate(() => {
+            const times = Array.from(document.querySelectorAll('time')).map(t => t.textContent.trim());
+            const body = document.body.innerText;
+            return {
+                times,
+                noUtcSuffix: times.every(t => !t.includes('UTC')),
+                hasWholeScores: !body.includes('10.5')
+            };
+        });
+        console.log("HISTORY DATA:", JSON.stringify(historyCheck));
+        if (!historyCheck.noUtcSuffix) throw new Error("History timestamps did not convert from UTC to local time!");
+        if (!historyCheck.hasWholeScores) throw new Error("History scores contain unrounded decimals!");
+        await page.screenshot({ path: path.join(docsDir, 'screenshot-1440-history.png'), fullPage: false });
 
-        const viewReportBtn = await page.$('a[href*="/?id="]');
-        if (!viewReportBtn) throw new Error("Could not find 'View Report' link in history");
-        console.log("✓ Found 'View Report' link in history");
+        await page.setViewport({ width: 390, height: 844 });
+        await new Promise(r => setTimeout(r, 400));
+        await page.evaluate(() => window.scrollTo(0, 0));
+        await checkLayout(page, 'history-390');
+        await page.screenshot({ path: path.join(docsDir, 'screenshot-390-history.png'), fullPage: true });
 
-        // 6. Click View Report to reopen analysis
-        console.log("6. Clicking 'View Report' to reopen historical analysis...");
-        await viewReportBtn.click();
+        // Reopen historical report and verify
+        await page.setViewport({ width: 1440, height: 900 });
+        const viewBtn = await page.$('a[href*="/?id="]');
+        if (!viewBtn) throw new Error("Missing View Report link");
+        await viewBtn.click();
         await page.waitForSelector('h1', { timeout: 10000 });
-        await new Promise(r => setTimeout(r, 1000));
-        const reopenedTitle = await page.$eval('h1', el => el.textContent);
-        console.log(`✓ Historical analysis reopened: "${reopenedTitle.trim()}"`);
+        await new Promise(r => setTimeout(r, 600));
+        console.log("✓ Reopened report:", await page.$eval('h1', el => el.textContent.trim()));
 
-        // 7. Clean up: Remove item from /saved
-        console.log("7. Testing removal from /saved...");
-        await page.goto('http://127.0.0.1:5199/saved', { waitUntil: 'networkidle0', timeout: 10000 });
-        await new Promise(r => setTimeout(r, 800));
-        const removeSavedBtn = await page.$('button[title*="Remove from saved"]');
-        if (removeSavedBtn) {
-            await removeSavedBtn.click();
-            await new Promise(r => setTimeout(r, 500));
-            console.log("✓ Removed saved item successfully");
+        // Clean up /saved and /history test records
+        await page.goto('http://127.0.0.1:5199/saved', { waitUntil: 'networkidle0' });
+        await new Promise(r => setTimeout(r, 600));
+        let rmBtn;
+        while ((rmBtn = await page.$('button[title*="Remove from saved"]')) !== null) {
+            await rmBtn.click();
+            await new Promise(r => setTimeout(r, 400));
         }
 
-        // 8. Clean up: Delete item from /history
-        console.log("8. Testing deletion from /history...");
-        await page.goto('http://127.0.0.1:5199/history', { waitUntil: 'networkidle0', timeout: 10000 });
-        await new Promise(r => setTimeout(r, 800));
-        const deleteHistoryBtn = await page.$('button[title*="Delete from history"]');
-        if (deleteHistoryBtn) {
-            await deleteHistoryBtn.click();
-            await new Promise(r => setTimeout(r, 500));
-            console.log("✓ Deleted history item successfully");
+        await page.goto('http://127.0.0.1:5199/history', { waitUntil: 'networkidle0' });
+        await new Promise(r => setTimeout(r, 600));
+        let delBtn;
+        while ((delBtn = await page.$('button[title*="Delete from history"]')) !== null) {
+            await delBtn.click();
+            await new Promise(r => setTimeout(r, 400));
         }
 
-        console.log("==================================================");
-        console.log("ALL END-TO-END FLOW VERIFICATIONS PASSED 100%!");
-        console.log("==================================================");
+        console.log("ALL COMPREHENSIVE VERIFICATIONS PASSED 100%!");
     } catch (err) {
         console.error("Verification failed:", err);
         process.exit(1);

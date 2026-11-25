@@ -24,18 +24,42 @@ public interface IRecommendationEngine
 
 public class RecommendationEngine : IRecommendationEngine
 {
+    private static readonly Dictionary<string, string[]> AdjacentGenreMap = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["Synth-Pop"] = new[] { "New Wave", "Dream Pop", "Electronic", "Indie Pop", "Alternative" },
+        ["Pop"] = new[] { "Indie Pop", "Synth-Pop", "R&B", "Funk", "Electronic" },
+        ["Rock"] = new[] { "Indie Rock", "Alternative", "Post-Punk", "Classic Rock", "Blues Rock" },
+        ["Progressive Rock"] = new[] { "Art Rock", "Jazz Fusion", "Psychedelic Rock", "Ambient", "Electronic" },
+        ["Classic Rock"] = new[] { "Blues Rock", "Folk Rock", "Soul", "Indie Rock", "Funk" },
+        ["Alternative"] = new[] { "Indie Rock", "Post-Punk", "Dream Pop", "Electronic", "Indie Folk" },
+        ["Indie Rock"] = new[] { "Post-Punk", "Dream Pop", "Garage Rock", "Indie Folk", "Alternative" },
+        ["Indie Pop"] = new[] { "Dream Pop", "Synth-Pop", "Jangle Pop", "Indie Folk", "Electronic" },
+        ["Indie"] = new[] { "Dream Pop", "Post-Punk", "Indie Folk", "Alternative", "Electronic" },
+        ["Hip-Hop"] = new[] { "R&B", "Neo-Soul", "Jazz", "Funk", "Electronic" },
+        ["Electronic"] = new[] { "Synthwave", "Ambient", "House", "Trip-Hop", "Indie Pop" },
+        ["Synthwave"] = new[] { "Synth-Pop", "Electronic", "New Wave", "Ambient", "Indie Pop" },
+        ["Jazz"] = new[] { "Bossa Nova", "Neo-Soul", "Funk", "Ambient", "Blues" },
+        ["Funk"] = new[] { "Soul", "Disco", "Jazz", "R&B", "Afrobeat" },
+        ["R&B"] = new[] { "Neo-Soul", "Funk", "Hip-Hop", "Jazz", "Pop" }
+    };
+
+    private static readonly string[] DefaultExploreGenres = { "New Wave", "Dream Pop", "Electronic", "Indie Pop", "Alternative", "Jazz" };
+
     private readonly HttpClient _httpClient;
     private readonly IMemoryCache _cache;
     private readonly ILogger<RecommendationEngine> _logger;
+    private readonly IDiversityScorer _scorer;
 
     public RecommendationEngine(
         IHttpClientFactory httpClientFactory,
         IMemoryCache cache,
-        ILogger<RecommendationEngine> logger)
+        ILogger<RecommendationEngine> logger,
+        IDiversityScorer? scorer = null)
     {
         _httpClient = httpClientFactory.CreateClient("MusicApi");
         _cache = cache;
         _logger = logger;
+        _scorer = scorer ?? new DiversityScorer();
     }
 
     public async Task<List<TrackSuggestion>> GenerateRecommendationsAsync(
@@ -43,6 +67,9 @@ public class RecommendationEngine : IRecommendationEngine
         int count = 8,
         CancellationToken cancellationToken = default)
     {
+        if (count <= 0)
+            return new List<TrackSuggestion>();
+
         var existingArtists = existingTracks
             .Select(t => t.Artist.Trim().ToLowerInvariant())
             .Where(a => !string.IsNullOrEmpty(a))
@@ -53,81 +80,190 @@ public class RecommendationEngine : IRecommendationEngine
             .Where(t => !string.IsNullOrEmpty(t))
             .ToHashSet();
 
-        // Detect top genres
+        var existingGenreSet = existingTracks
+            .Select(t => t.Genre?.Trim())
+            .Where(g => !string.IsNullOrWhiteSpace(g))
+            .Select(g => g!)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
         var topGenres = existingTracks
             .Select(t => t.Genre?.Trim())
             .Where(g => !string.IsNullOrWhiteSpace(g))
-            .GroupBy(g => g!)
+            .GroupBy(g => g!, StringComparer.OrdinalIgnoreCase)
             .OrderByDescending(g => g.Count())
             .Select(g => g.Key)
-            .Take(3)
+            .Take(5)
             .ToList();
 
         if (topGenres.Count == 0)
         {
-            topGenres = new List<string> { "Indie", "Alternative", "Electronic" };
+            topGenres = new List<string> { "Indie", "Alternative", "Electronic", "Jazz" };
         }
 
         var suggestions = new List<TrackSuggestion>();
         var seenKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var genre in topGenres)
+        var diversity = _scorer.CalculateScore(existingTracks);
+        bool isLowDiversity = existingTracks.Count > 0 && diversity.TotalScore < 40.0;
+
+        if (isLowDiversity)
         {
-            if (suggestions.Count >= count)
-                break;
+            var adjacentGenres = ResolveAdjacentGenres(topGenres, existingGenreSet);
+            int adjacentTarget = (int)Math.Ceiling(count / 2.0);
 
-            var candidates = await FetchTracksForGenreAsync(genre, cancellationToken);
-            foreach (var candidate in candidates)
+            await SampleRoundRobinAsync(
+                adjacentGenres,
+                suggestions,
+                targetTotal: Math.Min(count, adjacentTarget),
+                existingArtists,
+                existingTitles,
+                seenKeys,
+                genre => $"Broadens your mix into {genre}",
+                cancellationToken);
+
+            await SampleRoundRobinAsync(
+                topGenres,
+                suggestions,
+                targetTotal: count,
+                existingArtists,
+                existingTitles,
+                seenKeys,
+                genre => $"Matches {genre} with fresh artists",
+                cancellationToken);
+
+            // Top up from remaining adjacent genres if primary genre ran out of fresh artists
+            if (suggestions.Count < count)
             {
-                if (suggestions.Count >= count)
-                    break;
-
-                string artistNorm = candidate.Artist.Trim().ToLowerInvariant();
-                string titleNorm = candidate.Title.Trim().ToLowerInvariant();
-                string dedupeKey = $"{artistNorm} - {titleNorm}";
-
-                // Filter out existing artists & existing titles to enhance diversity
-                if (existingArtists.Contains(artistNorm) ||
-                    existingTitles.Contains(titleNorm) ||
-                    seenKeys.Contains(dedupeKey))
-                {
-                    continue;
-                }
-
-                seenKeys.Add(dedupeKey);
-                suggestions.Add(candidate with
-                {
-                    MatchReason = $"Expands your {genre} sonic palette with fresh artist variety"
-                });
+                await SampleRoundRobinAsync(
+                    adjacentGenres,
+                    suggestions,
+                    targetTotal: count,
+                    existingArtists,
+                    existingTitles,
+                    seenKeys,
+                    genre => $"Broadens your mix into {genre}",
+                    cancellationToken);
             }
         }
-
-        // If we still need more tracks, add complementary tracks from key genre blends
-        if (suggestions.Count < count)
+        else
         {
-            var fallbackGenre = "Alternative";
-            var more = await FetchTracksForGenreAsync(fallbackGenre, cancellationToken);
-            foreach (var candidate in more)
+            await SampleRoundRobinAsync(
+                topGenres,
+                suggestions,
+                targetTotal: count,
+                existingArtists,
+                existingTitles,
+                seenKeys,
+                genre => $"Expands your {genre} palette with new artists",
+                cancellationToken);
+
+            if (suggestions.Count < count)
             {
-                if (suggestions.Count >= count)
-                    break;
-
-                string artistNorm = candidate.Artist.Trim().ToLowerInvariant();
-                string titleNorm = candidate.Title.Trim().ToLowerInvariant();
-                string dedupeKey = $"{artistNorm} - {titleNorm}";
-
-                if (!existingArtists.Contains(artistNorm) && !seenKeys.Contains(dedupeKey))
-                {
-                    seenKeys.Add(dedupeKey);
-                    suggestions.Add(candidate with
-                    {
-                        MatchReason = "Introduces complementary crossover sound"
-                    });
-                }
+                var fallbackGenres = ResolveAdjacentGenres(topGenres, existingGenreSet);
+                await SampleRoundRobinAsync(
+                    fallbackGenres,
+                    suggestions,
+                    targetTotal: count,
+                    existingArtists,
+                    existingTitles,
+                    seenKeys,
+                    genre => $"Introduces complementary {genre} sound",
+                    cancellationToken);
             }
         }
 
         return suggestions;
+    }
+
+    private static List<string> ResolveAdjacentGenres(IReadOnlyList<string> sourceGenres, HashSet<string> existingGenreSet)
+    {
+        var adjacent = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var g in sourceGenres)
+        {
+            if (AdjacentGenreMap.TryGetValue(g, out var mapped))
+            {
+                foreach (var candidate in mapped)
+                {
+                    if (!existingGenreSet.Contains(candidate) && seen.Add(candidate))
+                    {
+                        adjacent.Add(candidate);
+                    }
+                }
+            }
+        }
+
+        foreach (var candidate in DefaultExploreGenres)
+        {
+            if (!existingGenreSet.Contains(candidate) && seen.Add(candidate))
+            {
+                adjacent.Add(candidate);
+            }
+        }
+
+        return adjacent.Take(5).ToList();
+    }
+
+    private async Task SampleRoundRobinAsync(
+        IReadOnlyList<string> genres,
+        List<TrackSuggestion> suggestions,
+        int targetTotal,
+        HashSet<string> existingArtists,
+        HashSet<string> existingTitles,
+        HashSet<string> seenKeys,
+        Func<string, string> reasonFactory,
+        CancellationToken cancellationToken)
+    {
+        if (genres.Count == 0 || suggestions.Count >= targetTotal)
+            return;
+
+        var fetchedLists = await Task.WhenAll(
+            genres.Select(async g => (Genre: g, Items: await FetchTracksForGenreAsync(g, cancellationToken))));
+
+        var pools = fetchedLists
+            .Select(x => (x.Genre, x.Items, Index: 0))
+            .ToList();
+
+        bool addedAny = true;
+        while (suggestions.Count < targetTotal && addedAny)
+        {
+            addedAny = false;
+            for (int p = 0; p < pools.Count && suggestions.Count < targetTotal; p++)
+            {
+                var (genre, items, idx) = pools[p];
+                while (idx < items.Count)
+                {
+                    var candidate = items[idx++];
+                    if (IsEligibleCandidate(candidate, existingArtists, existingTitles, seenKeys))
+                    {
+                        suggestions.Add(candidate with { MatchReason = reasonFactory(genre) });
+                        addedAny = true;
+                        break;
+                    }
+                }
+                pools[p] = (genre, items, idx);
+            }
+        }
+    }
+
+    private static bool IsEligibleCandidate(
+        TrackSuggestion candidate,
+        HashSet<string> existingArtists,
+        HashSet<string> existingTitles,
+        HashSet<string> seenKeys)
+    {
+        if (string.IsNullOrWhiteSpace(candidate.Artist) || string.IsNullOrWhiteSpace(candidate.Title))
+            return false;
+
+        string artistNorm = candidate.Artist.Trim().ToLowerInvariant();
+        string titleNorm = candidate.Title.Trim().ToLowerInvariant();
+        string dedupeKey = $"{artistNorm} - {titleNorm}";
+
+        if (existingArtists.Contains(artistNorm) || existingTitles.Contains(titleNorm))
+            return false;
+
+        return seenKeys.Add(dedupeKey);
     }
 
     private async Task<List<TrackSuggestion>> FetchTracksForGenreAsync(string genre, CancellationToken cancellationToken)

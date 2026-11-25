@@ -1,8 +1,9 @@
-namespace TuneTrack.Services;
+namespace TuneTrack.Services.Providers;
 
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using TuneTrack.Models;
+using TuneTrack.Services.Recommendations;
 
 public class SpotifyPlaylistProvider : IPlaylistProvider
 {

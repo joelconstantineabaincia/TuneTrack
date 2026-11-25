@@ -1,9 +1,10 @@
-namespace TuneTrack.Services;
+namespace TuneTrack.Services.Recommendations;
 
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.Caching.Memory;
 using TuneTrack.Models;
+using TuneTrack.Services.Analysis;
 
 public record TrackSuggestion(
     string Title,

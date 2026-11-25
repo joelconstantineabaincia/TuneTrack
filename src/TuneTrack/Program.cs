@@ -1,7 +1,10 @@
 using Microsoft.EntityFrameworkCore;
 using TuneTrack.Components;
 using TuneTrack.Data;
-using TuneTrack.Services;
+using TuneTrack.Services.Analysis;
+using TuneTrack.Services.Providers;
+using TuneTrack.Services.Recommendations;
+using TuneTrack.Services.Samples;
 
 var builder = WebApplication.CreateBuilder(args);
 

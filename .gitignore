@@ -16,7 +16,7 @@ yarn-debug.log*
 yarn-error.log*
 
 # Generated assets
-wwwroot/css/app.css
+src/TuneTrack/wwwroot/css/app.css
 
 # Skills & agent artifacts
 .agents/

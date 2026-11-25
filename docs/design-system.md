@@ -65,4 +65,4 @@
 ### Accessibility & Reduced Motion
 - All icons are crisp inline SVGs (never emoji).
 - Text contrast meets WCAG AA (`>= 4.5:1` body, `>= 3:1` large text).
-- `@media (prefers-reduced-motion: reduce)` disables transitions and animations globally in `Styles/app.css`.
+- `@media (prefers-reduced-motion: reduce)` disables transitions and animations globally in `src/TuneTrack/Styles/app.css`.

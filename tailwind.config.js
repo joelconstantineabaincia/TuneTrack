@@ -1,10 +1,10 @@
 /** @type {import('tailwindcss').Config} */
 module.exports = {
   content: [
-    "./Components/**/*.{razor,html,cshtml}",
-    "./Pages/**/*.{razor,html,cshtml}",
-    "./App.razor",
-    "./**/*.razor"
+    "./src/TuneTrack/Components/**/*.{razor,html,cshtml}",
+    "./src/TuneTrack/Pages/**/*.{razor,html,cshtml}",
+    "./src/TuneTrack/App.razor",
+    "./src/TuneTrack/**/*.razor"
   ],
   theme: {
     extend: {

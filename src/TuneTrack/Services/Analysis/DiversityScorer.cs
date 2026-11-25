@@ -1,4 +1,4 @@
-namespace TuneTrack.Services;
+namespace TuneTrack.Services.Analysis;
 
 using TuneTrack.Models;
 

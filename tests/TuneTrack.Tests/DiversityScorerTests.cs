@@ -1,7 +1,7 @@
 namespace TuneTrack.Tests;
 
 using TuneTrack.Models;
-using TuneTrack.Services;
+using TuneTrack.Services.Analysis;
 using Xunit;
 
 public class DiversityScorerTests

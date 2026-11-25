@@ -38,7 +38,7 @@ async function run() {
     const page = await browser.newPage();
     page.on('pageerror', err => console.log('BROWSER ERROR:', err.message));
 
-    const docsDir = path.join(__dirname, '..', 'docs');
+    const docsDir = path.join(__dirname, '..', 'docs', 'screenshots');
     fs.mkdirSync(docsDir, { recursive: true });
 
     try {

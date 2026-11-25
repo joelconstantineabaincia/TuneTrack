@@ -1,4 +1,4 @@
-namespace TuneTrack.Services;
+namespace TuneTrack.Services.Samples;
 
 using TuneTrack.Models;
 

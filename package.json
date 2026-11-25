@@ -2,8 +2,8 @@
   "name": "tunetrack",
   "version": "1.0.0",
   "scripts": {
-    "build:css": "tailwindcss -i ./Styles/app.css -o ./wwwroot/css/app.css --minify",
-    "watch:css": "tailwindcss -i ./Styles/app.css -o ./wwwroot/css/app.css --watch"
+    "build:css": "tailwindcss -i ./src/TuneTrack/Styles/app.css -o ./src/TuneTrack/wwwroot/css/app.css --minify",
+    "watch:css": "tailwindcss -i ./src/TuneTrack/Styles/app.css -o ./src/TuneTrack/wwwroot/css/app.css --watch"
   },
   "devDependencies": {
     "autoprefixer": "^10.4.20",

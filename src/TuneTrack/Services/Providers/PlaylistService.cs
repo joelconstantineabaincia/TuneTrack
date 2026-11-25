@@ -1,8 +1,11 @@
-namespace TuneTrack.Services;
+namespace TuneTrack.Services.Providers;
 
 using Microsoft.EntityFrameworkCore;
 using TuneTrack.Data;
 using TuneTrack.Models;
+using TuneTrack.Services.Analysis;
+using TuneTrack.Services.Recommendations;
+using TuneTrack.Services.Samples;
 
 public record AnalysisDashboardData(
     AnalyzedPlaylist Playlist,

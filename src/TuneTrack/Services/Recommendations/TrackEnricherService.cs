@@ -1,4 +1,4 @@
-namespace TuneTrack.Services;
+namespace TuneTrack.Services.Recommendations;
 
 using System.Text.Json;
 using System.Text.Json.Serialization;

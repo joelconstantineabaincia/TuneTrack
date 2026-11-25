@@ -1,4 +1,4 @@
-namespace TuneTrack.Services;
+namespace TuneTrack.Services.Providers;
 
 using TuneTrack.Models;
 

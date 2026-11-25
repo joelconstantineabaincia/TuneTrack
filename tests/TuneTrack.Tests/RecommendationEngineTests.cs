@@ -6,7 +6,7 @@ using System.Text.Json;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging.Abstractions;
 using TuneTrack.Models;
-using TuneTrack.Services;
+using TuneTrack.Services.Recommendations;
 using Xunit;
 
 public class RecommendationEngineTests

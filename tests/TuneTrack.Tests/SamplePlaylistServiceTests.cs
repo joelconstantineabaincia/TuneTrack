@@ -1,6 +1,6 @@
 namespace TuneTrack.Tests;
 
-using TuneTrack.Services;
+using TuneTrack.Services.Samples;
 using Xunit;
 
 public class SamplePlaylistServiceTests

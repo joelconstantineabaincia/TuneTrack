@@ -13,17 +13,17 @@
                         <circle cx="18" cy="16" r="3" />
                     </svg>
                 </div>
-                <span class="font-bold text-base tracking-tight text-white">TuneTrack</span>
+                <span class="font-display font-bold text-base tracking-tight text-white">TuneTrack</span>
             </a>
 
             <nav class="flex items-center gap-1 sm:gap-2" aria-label="Main navigation">
-                <a href="/" class="px-2.5 sm:px-3 py-1.5 text-sm font-medium rounded-md transition-colors focus-visible:ring-2 focus-visible:ring-emerald-500 outline-none @(IsActive("/") ? "text-white bg-white/[0.08]" : "text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.03]")">
+                <a href="/" aria-current="@(IsActive("/") ? "page" : null)" class="px-2.5 sm:px-3 py-1.5 text-sm font-medium rounded-md transition-colors focus-visible:ring-2 focus-visible:ring-emerald-500 outline-none @(IsActive("/") ? "text-white bg-white/[0.08]" : "text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.03]")">
                     Analyzer
                 </a>
-                <a href="/history" class="px-2.5 sm:px-3 py-1.5 text-sm font-medium rounded-md transition-colors focus-visible:ring-2 focus-visible:ring-emerald-500 outline-none @(IsActive("/history") ? "text-white bg-white/[0.08]" : "text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.03]")">
+                <a href="/history" aria-current="@(IsActive("/history") ? "page" : null)" class="px-2.5 sm:px-3 py-1.5 text-sm font-medium rounded-md transition-colors focus-visible:ring-2 focus-visible:ring-emerald-500 outline-none @(IsActive("/history") ? "text-white bg-white/[0.08]" : "text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.03]")">
                     History
                 </a>
-                <a href="/saved" class="px-2.5 sm:px-3 py-1.5 text-sm font-medium rounded-md transition-colors focus-visible:ring-2 focus-visible:ring-emerald-500 outline-none @(IsActive("/saved") ? "text-white bg-white/[0.08]" : "text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.03]")">
+                <a href="/saved" aria-current="@(IsActive("/saved") ? "page" : null)" class="px-2.5 sm:px-3 py-1.5 text-sm font-medium rounded-md transition-colors focus-visible:ring-2 focus-visible:ring-emerald-500 outline-none @(IsActive("/saved") ? "text-white bg-white/[0.08]" : "text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.03]")">
                     Saved
                 </a>
             </nav>
@@ -50,7 +50,7 @@
 
     private bool IsActive(string path)
     {
-        var relative = Navigation.ToBaseRelativePath(Navigation.Uri);
+        var relative = Navigation.ToBaseRelativePath(Navigation.Uri).Split('?', '#')[0];
         if (path == "/" || path == "")
         {
             return string.IsNullOrEmpty(relative);

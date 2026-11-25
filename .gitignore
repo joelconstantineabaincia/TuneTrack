@@ -3,9 +3,11 @@ bin/
 obj/
 *.user
 *.suo
+*.log
 .vs/
 .vscode/
 .idea/
+TestResults/
 
 # Node / Tailwind
 node_modules/
@@ -13,18 +15,23 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
+# Generated assets
+wwwroot/css/app.css
+
 # Skills & agent artifacts
 .agents/
 .agent/
+skills-lock.json
 
 # OS
 .DS_Store
 Thumbs.db
-skills-lock.json 
 
 # Secrets and local config
 .env
+.env.*
 appsettings.*.local.json
 appsettings.local.json
+secrets.json
 
 

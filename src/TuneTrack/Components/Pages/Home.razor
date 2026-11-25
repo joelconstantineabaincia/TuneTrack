@@ -51,7 +51,7 @@
 
             <button @onclick="AnalyzeEnteredUrl"
                     disabled="@(isLoading || string.IsNullOrWhiteSpace(inputUrl))"
-                    class="px-5 py-2.5 bg-emerald-500 hover:bg-emerald-400 active:scale-[0.98] disabled:bg-zinc-800 disabled:text-zinc-400 disabled:cursor-not-allowed text-zinc-950 font-semibold text-sm rounded-lg flex items-center justify-center gap-2 transition-all focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950 outline-none">
+                    class="px-5 py-2.5 bg-emerald-500 hover:bg-emerald-400 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed text-zinc-950 font-semibold text-sm rounded-lg flex items-center justify-center gap-2 transition-all focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950 outline-none">
                 @if (isLoading)
                 {
                     <svg class="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none">
@@ -136,32 +136,7 @@
     }
     else if (dashboard != null)
     {
-        <!-- Partial Result Alert with Manual Paste Fallback -->
-        @if (dashboard.IsPartialResult || showPasteFallback)
-        {
-            <div class="p-5 rounded-xl bg-amber-950/30 border border-amber-500/20 text-amber-200 space-y-3">
-                <div class="flex items-center gap-2 font-medium text-sm">
-                    <svg class="w-5 h-5 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                    <span>Tracklist Protected by Platform</span>
-                </div>
-                <p class="text-xs text-amber-200/80 leading-relaxed">
-                    @(dashboard.WarningMessage ?? "This platform limits keyless scraping of full tracklists. Paste your tracklist below (one 'Artist - Title' per line) to enrich genres and compute diversity.")
-                </p>
-                <div class="space-y-2">
-                    <textarea @bind="pastedTrackList"
-                              rows="4"
-                              placeholder="1. Daft Punk - One More Time&#10;2. Kendrick Lamar - Alright&#10;3. Fleet Foxes - White Winter Hymnal"
-                              class="w-full p-3 bg-zinc-900 border border-white/10 rounded-lg text-xs font-mono text-zinc-100 placeholder-zinc-400 focus-visible:ring-2 focus-visible:ring-emerald-500 outline-none"></textarea>
-                    <button @onclick="AnalyzePastedList"
-                            disabled="@(string.IsNullOrWhiteSpace(pastedTrackList) || isLoading)"
-                            class="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-zinc-950 font-semibold text-xs rounded-lg transition-colors">
-                        Analyze Pasted Tracks
-                    </button>
-                </div>
-            </div>
-        }
+        bool isPartialView = dashboard.IsPartialResult || showPasteFallback || dashboard.Playlist.Tracks.Count == 0;
 
         <!-- Borderless Editorial Playlist Header -->
         <section aria-label="Playlist overview" class="pt-1 pb-8 border-b border-white/10">
@@ -188,32 +163,71 @@
                         @dashboard.Playlist.Title
                     </h1>
 
-                    <!-- Inline Stat Strip (no orphaned middots when wrapping) -->
-                    @{
+                    @if (!isPartialView)
+                    {
+                        <!-- Inline Stat Strip (no orphaned middots when wrapping) -->
                         int genreCount = GetDistinctGenreCount();
+                        <div class="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs sm:text-sm text-zinc-300 font-mono tabular-nums">
+                            <span class="inline-flex items-center gap-1.5 font-bold whitespace-nowrap @GetScoreColor(dashboard.Diversity.TotalScore)">
+                                <span class="w-2 h-2 rounded-full bg-current" aria-hidden="true"></span>
+                                <span>@FormatWholeScore(dashboard.Diversity.TotalScore) Diversity</span>
+                            </span>
+                            <span class="whitespace-nowrap">@Pluralize(dashboard.Playlist.TrackCount, "Track", "Tracks")</span>
+                            <span class="whitespace-nowrap">@dashboard.Playlist.TotalDuration</span>
+                            <span class="whitespace-nowrap">@Pluralize(genreCount, "Genre", "Genres")</span>
+                        </div>
                     }
-                    <div class="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs sm:text-sm text-zinc-300 font-mono tabular-nums">
-                        <span class="inline-flex items-center gap-1.5 font-bold whitespace-nowrap @GetScoreColor(dashboard.Diversity.TotalScore)">
-                            <span class="w-2 h-2 rounded-full bg-current" aria-hidden="true"></span>
-                            <span>@FormatWholeScore(dashboard.Diversity.TotalScore) Diversity</span>
-                        </span>
-                        <span class="whitespace-nowrap">@Pluralize(dashboard.Playlist.TrackCount, "Track", "Tracks")</span>
-                        <span class="whitespace-nowrap">@dashboard.Playlist.TotalDuration</span>
-                        <span class="whitespace-nowrap">@Pluralize(genreCount, "Genre", "Genres")</span>
-                    </div>
 
                     <div class="flex flex-wrap items-center gap-2.5 pt-0.5">
                         <span class="px-2 py-0.5 rounded text-xs font-medium whitespace-nowrap @GetPlatformBadgeClass(dashboard.Playlist.Platform)">
                             @dashboard.Playlist.Platform
                         </span>
-                        <span class="text-xs text-zinc-400 font-mono">Analyzed @FormatDisplayDate(dashboard.Playlist.AnalyzedAt)</span>
+                        @if (!isPartialView)
+                        {
+                            <span class="text-xs text-zinc-400 font-mono">Analyzed @FormatDisplayDate(dashboard.Playlist.AnalyzedAt)</span>
+                        }
                     </div>
                 </div>
             </div>
         </section>
 
-        <!-- 2-Column Asymmetric Workspace -->
-        <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+        @if (isPartialView)
+        {
+            string fallbackCopy = !string.IsNullOrWhiteSpace(dashboard.WarningMessage) && !dashboard.WarningMessage.Contains('!')
+                ? dashboard.WarningMessage
+                : $"{dashboard.Playlist.Platform} doesn't share track lists publicly. Paste your tracks, one 'Artist - Title' per line, and we'll analyze them.";
+
+            <!-- Partial Result Paste Fallback -->
+            <section aria-label="Paste tracklist" class="p-5 rounded-xl bg-zinc-900/70 border border-amber-500/25 space-y-3 max-w-3xl">
+                <div class="flex items-center gap-2 font-medium text-sm text-amber-300">
+                    <svg class="w-5 h-5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <span>Paste your tracklist</span>
+                </div>
+                <p class="text-xs text-zinc-300 leading-relaxed">
+                    @fallbackCopy
+                </p>
+                <div class="space-y-3">
+                    <label for="pasted-tracklist" class="sr-only">Tracklist, one Artist - Title per line</label>
+                    <textarea id="pasted-tracklist"
+                              @bind="pastedTrackList"
+                              rows="5"
+                              placeholder="@PastedTrackListPlaceholder"
+                              class="w-full p-3 bg-zinc-950 border border-white/15 rounded-lg text-xs font-mono text-zinc-100 placeholder-zinc-400 focus-visible:ring-2 focus-visible:ring-emerald-500 outline-none"></textarea>
+                    <button type="button"
+                            @onclick="AnalyzePastedList"
+                            disabled="@(string.IsNullOrWhiteSpace(pastedTrackList) || isLoading)"
+                            class="px-4 py-2 bg-amber-400 hover:bg-amber-300 disabled:opacity-50 disabled:cursor-not-allowed text-zinc-950 font-semibold text-xs rounded-lg transition-colors focus-visible:ring-2 focus-visible:ring-emerald-500 outline-none">
+                        Analyze Pasted Tracks
+                    </button>
+                </div>
+            </section>
+        }
+        else
+        {
+            <!-- 2-Column Asymmetric Workspace -->
+            <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
             <!-- Left 8 Columns: Searchable Tracklist Table -->
             <div class="lg:col-span-8 min-w-0 space-y-4">
                 <!-- Search & All-Genres Scrollable Filter Bar -->
@@ -298,7 +312,12 @@
                                     <td class="py-3 px-2 sm:px-3 min-w-0">
                                         <div class="flex items-center gap-3 min-w-0">
                                             <div class="w-9 h-9 rounded bg-zinc-800 flex-shrink-0 overflow-hidden">
-                                                @if (!string.IsNullOrEmpty(track.ArtworkUrl))
+                                                @{
+                                                    bool showTrackArtwork = !string.IsNullOrEmpty(track.ArtworkUrl) &&
+                                                        (string.Equals(dashboard.Playlist.Platform, "Sample", StringComparison.OrdinalIgnoreCase) ||
+                                                         !string.Equals(track.ArtworkUrl, dashboard.Playlist.CoverUrl, StringComparison.OrdinalIgnoreCase));
+                                                }
+                                                @if (showTrackArtwork)
                                                 {
                                                     <img src="@track.ArtworkUrl" alt="@track.Title cover" loading="lazy" class="w-full h-full object-cover" />
                                                 }
@@ -357,7 +376,19 @@
             <aside aria-label="Diversity metrics and recommendations" class="lg:col-span-4 min-w-0 space-y-7 lg:sticky lg:top-20">
                 <!-- Diversity Scorecard -->
                 <section class="pb-7 border-b border-white/10 space-y-4">
-                    <h2 class="font-display text-sm font-semibold text-zinc-100">Diversity Score</h2>
+                    @{
+                        int totalTrackCount = dashboard.Playlist.Tracks.Count;
+                        int matchedTrackCount = dashboard.Playlist.Tracks.Count(t =>
+                            !string.IsNullOrWhiteSpace(t.Genre) ||
+                            t.ReleaseYear.HasValue ||
+                            !string.IsNullOrWhiteSpace(t.Album));
+                    }
+                    <div class="flex items-baseline justify-between gap-2">
+                        <h2 class="font-display text-sm font-semibold text-zinc-100">Diversity Score</h2>
+                        <span class="text-xs text-zinc-400 font-mono tabular-nums">
+                            Matched @matchedTrackCount of @totalTrackCount tracks
+                        </span>
+                    </div>
 
                     <div class="flex items-baseline gap-3.5">
                         <div class="flex items-baseline gap-1 font-mono tabular-nums flex-shrink-0">
@@ -411,20 +442,30 @@
                 <!-- Genre Distribution Breakdown -->
                 <section class="pb-7 border-b border-white/10 space-y-3">
                     <h2 class="font-display text-sm font-semibold text-zinc-100">Genre Distribution</h2>
-                    <div class="space-y-2.5 text-xs">
-                        @foreach (var genreStat in GetGenreDistribution(5))
-                        {
-                            <div class="space-y-1">
-                                <div class="flex justify-between text-zinc-300">
-                                    <span class="truncate pr-2">@genreStat.Genre</span>
-                                    <span class="font-mono tabular-nums text-zinc-400">@genreStat.Percentage%</span>
+                    @{
+                        var genreDistribution = GetGenreDistribution(5);
+                    }
+                    @if (genreDistribution.Count == 0)
+                    {
+                        <p class="text-xs text-zinc-400">No matched genre data yet.</p>
+                    }
+                    else
+                    {
+                        <div class="space-y-2.5 text-xs">
+                            @foreach (var genreStat in genreDistribution)
+                            {
+                                <div class="space-y-1">
+                                    <div class="flex justify-between text-zinc-300">
+                                        <span class="truncate pr-2">@genreStat.Genre</span>
+                                        <span class="font-mono tabular-nums text-zinc-400">@genreStat.Percentage%</span>
+                                    </div>
+                                    <div class="h-1 w-full bg-zinc-800 rounded-full overflow-hidden">
+                                        <div class="h-full bg-white/40 rounded-full" style="width: @(genreStat.Percentage)%"></div>
+                                    </div>
                                 </div>
-                                <div class="h-1 w-full bg-zinc-800 rounded-full overflow-hidden">
-                                    <div class="h-full bg-white/40 rounded-full" style="width: @(genreStat.Percentage)%"></div>
-                                </div>
-                            </div>
-                        }
-                    </div>
+                            }
+                        </div>
+                    }
                 </section>
 
                 <!-- Suggested Music to Add -->
@@ -529,6 +570,7 @@
                 </section>
             </aside>
         </div>
+        }
     }
     else
     {
@@ -629,6 +671,8 @@
     private HashSet<string> savedTrackTitles = new(StringComparer.OrdinalIgnoreCase);
 
     // Partial result fallback paste
+    private const string PastedTrackListPlaceholder =
+        "Daft Punk - One More Time\nKendrick Lamar - Alright\nFleet Foxes - White Winter Hymnal";
     private bool showPasteFallback;
     private string pastedTrackList = "";
 
@@ -684,6 +728,7 @@
         isLoading = true;
         errorMessage = null;
         showPasteFallback = false;
+        pastedTrackList = "";
         selectedGenreFilter = null;
         trackSearchQuery = "";
         dashboard = null;
@@ -691,7 +736,7 @@
         try
         {
             dashboard = await PlaylistService.AnalyzeUrlAsync(inputUrl.Trim(), clientId);
-            if (dashboard.IsPartialResult)
+            if (dashboard.IsPartialResult || dashboard.Playlist.Tracks.Count == 0)
             {
                 showPasteFallback = true;
             }
@@ -712,6 +757,7 @@
         isLoading = true;
         errorMessage = null;
         showPasteFallback = false;
+        pastedTrackList = "";
         selectedGenreFilter = null;
         trackSearchQuery = "";
         dashboard = null;
@@ -750,6 +796,7 @@
                 clientId: clientId
             );
             showPasteFallback = false;
+            pastedTrackList = "";
             await RefreshLocalDisplayDate();
         }
         catch (Exception ex)
@@ -765,6 +812,8 @@
     private async Task LoadPlaylistFromHistory(int playlistId)
     {
         isLoading = true;
+        showPasteFallback = false;
+        pastedTrackList = "";
         selectedGenreFilter = null;
         trackSearchQuery = "";
         try

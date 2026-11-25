@@ -1,5 +1,6 @@
 namespace TuneTrack.Services.Providers;
 
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using TuneTrack.Models;
 using TuneTrack.Services.Recommendations;
@@ -33,8 +34,11 @@ public class YouTubeMusicPlaylistProvider : IPlaylistProvider
     {
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+            Uri targetUri = BuildWebPlaylistUri(uri);
+            using var request = new HttpRequestMessage(HttpMethod.Get, targetUri);
             request.Headers.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+            request.Headers.TryAddWithoutValidation("Accept-Language", "en-US,en;q=0.9");
+            request.Headers.TryAddWithoutValidation("Cookie", "SOCS=CAESEwgDEgk0ODE3Nzk3MjQaAmVuIAEaBgiA_LyaBg; CONSENT=YES+cb");
 
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             cts.CancelAfter(TimeSpan.FromSeconds(10));
@@ -42,26 +46,30 @@ public class YouTubeMusicPlaylistProvider : IPlaylistProvider
             using var response = await _httpClient.SendAsync(request, cts.Token);
             if (!response.IsSuccessStatusCode)
             {
-                return PlaylistFetchResult.Fail(PlatformName, $"YouTube returned status {response.StatusCode}.");
+                return PlaylistFetchResult.Partial(PlatformName, "YouTube Music Playlist", null,
+                    "YouTube Music doesn't share track lists publicly. Paste your tracks, one 'Artist - Title' per line, and we'll analyze them.");
             }
 
             string html = await response.Content.ReadAsStringAsync(cts.Token);
 
-            string title = ExtractMeta(html, "og:title") ?? "YouTube Playlist";
-            title = title.Replace(" - YouTube", "", StringComparison.OrdinalIgnoreCase)
-                         .Replace(" - YouTube Music", "", StringComparison.OrdinalIgnoreCase).Trim();
+            string title = ExtractMeta(html, "og:title") ?? "YouTube Music Playlist";
+            title = CleanPlaylistTitle(title);
             string? coverUrl = ExtractMeta(html, "og:image");
 
-            var tracks = ParseYtInitialData(html);
+            var (ytTitle, ytCover, tracks) = ParseYtInitialData(html);
+            if (!string.IsNullOrWhiteSpace(ytTitle))
+                title = CleanPlaylistTitle(ytTitle);
+            if (!string.IsNullOrWhiteSpace(ytCover))
+                coverUrl = ytCover;
+
             if (tracks.Count > 0)
             {
                 await _enricher.EnrichTracksAsync(tracks, maxToEnrich: 30, cts.Token);
                 return PlaylistFetchResult.Ok(PlatformName, title, coverUrl, tracks);
             }
 
-            // Return clean partial result for YouTube so UI offers paste fallback
             return PlaylistFetchResult.Partial(PlatformName, title, coverUrl,
-                "YouTube playlist detected. Paste your tracklist below to calculate full diversity metrics!");
+                "YouTube Music doesn't share track lists publicly. Paste your tracks, one 'Artist - Title' per line, and we'll analyze them.");
         }
         catch (OperationCanceledException)
         {
@@ -75,31 +83,219 @@ public class YouTubeMusicPlaylistProvider : IPlaylistProvider
         }
     }
 
+    private static Uri BuildWebPlaylistUri(Uri uri)
+    {
+        var listMatch = Regex.Match(uri.Query, @"[?&]list=([^&]+)", RegexOptions.IgnoreCase);
+        if (listMatch.Success)
+        {
+            string listId = listMatch.Groups[1].Value;
+            return new Uri($"https://www.youtube.com/playlist?list={listId}");
+        }
+        return uri;
+    }
+
+    private static string CleanPlaylistTitle(string raw) =>
+        raw.Replace(" - YouTube Music", "", StringComparison.OrdinalIgnoreCase)
+           .Replace(" - YouTube", "", StringComparison.OrdinalIgnoreCase)
+           .Trim();
+
     private static string? ExtractMeta(string html, string property)
     {
         var match = Regex.Match(html, $@"<meta property=""{Regex.Escape(property)}"" content=""([^""]*)""");
-        return match.Success ? match.Groups[1].Value : null;
+        return match.Success && !string.IsNullOrWhiteSpace(match.Groups[1].Value)
+            ? System.Net.WebUtility.HtmlDecode(match.Groups[1].Value)
+            : null;
     }
 
-    private static List<AnalyzedTrack> ParseYtInitialData(string html)
+    private static (string? Title, string? CoverUrl, List<AnalyzedTrack> Tracks) ParseYtInitialData(string html)
     {
         var tracks = new List<AnalyzedTrack>();
-        // Match video renderer title & channel patterns in initial data
-        var titleMatches = Regex.Matches(html, @"""playlistVideoRenderer"":\{""videoId"":""[^""]+"",""thumbnail"":\{[^}]+\},""title"":\{""runs"":\[\{""text"":""([^""]+)""\}\]\}");
+        string? json = ExtractJsonObjectAfter(html, "var ytInitialData =", "window[\"ytInitialData\"] =");
+        if (string.IsNullOrWhiteSpace(json))
+            return (null, null, tracks);
 
-        foreach (Match m in titleMatches)
+        try
         {
-            if (m.Success && m.Groups.Count > 1)
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            string? title = null;
+            if (root.TryGetProperty("metadata", out var metadata) &&
+                metadata.TryGetProperty("playlistMetadataRenderer", out var pmr) &&
+                pmr.TryGetProperty("title", out var tProp))
             {
-                string raw = m.Groups[1].Value;
-                if (!string.IsNullOrWhiteSpace(raw) && !raw.Contains("Private video") && !raw.Contains("Deleted video"))
+                title = tProp.GetString();
+            }
+
+            string? coverUrl = null;
+            if (root.TryGetProperty("microformat", out var micro) &&
+                micro.TryGetProperty("microformatDataRenderer", out var mdr) &&
+                mdr.TryGetProperty("thumbnail", out var thumb) &&
+                thumb.TryGetProperty("thumbnails", out var thumbs) &&
+                thumbs.ValueKind == JsonValueKind.Array &&
+                thumbs.GetArrayLength() > 0)
+            {
+                coverUrl = thumbs[thumbs.GetArrayLength() - 1].TryGetProperty("url", out var u) ? u.GetString() : null;
+            }
+
+            CollectPlaylistVideoRenderers(root, tracks);
+            return (title, coverUrl, tracks);
+        }
+        catch (JsonException)
+        {
+            return (null, null, tracks);
+        }
+    }
+
+    private static void CollectPlaylistVideoRenderers(JsonElement element, List<AnalyzedTrack> tracks)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            if (element.TryGetProperty("playlistVideoRenderer", out var renderer) &&
+                renderer.ValueKind == JsonValueKind.Object)
+            {
+                var track = ParseVideoRenderer(renderer);
+                if (track != null)
                 {
-                    var parsed = FallbackTrackListParser.ParseSingleLine(raw);
-                    tracks.Add(parsed);
+                    tracks.Add(track);
                 }
+                return;
+            }
+
+            foreach (var prop in element.EnumerateObject())
+            {
+                CollectPlaylistVideoRenderers(prop.Value, tracks);
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in element.EnumerateArray())
+            {
+                CollectPlaylistVideoRenderers(item, tracks);
+            }
+        }
+    }
+
+    private static AnalyzedTrack? ParseVideoRenderer(JsonElement renderer)
+    {
+        string rawTitle = ReadRunsText(renderer, "title");
+        if (string.IsNullOrWhiteSpace(rawTitle) ||
+            rawTitle.Contains("[Private video]", StringComparison.OrdinalIgnoreCase) ||
+            rawTitle.Contains("[Deleted video]", StringComparison.OrdinalIgnoreCase) ||
+            rawTitle.Equals("Private video", StringComparison.OrdinalIgnoreCase) ||
+            rawTitle.Equals("Deleted video", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        string channel = ReadRunsText(renderer, "shortBylineText");
+        if (string.IsNullOrWhiteSpace(channel))
+            channel = ReadRunsText(renderer, "longBylineText");
+
+        int durationMs = 180000;
+        if (renderer.TryGetProperty("lengthSeconds", out var lenProp))
+        {
+            string? secStr = lenProp.ValueKind == JsonValueKind.String ? lenProp.GetString() : lenProp.ToString();
+            if (int.TryParse(secStr, out int seconds) && seconds > 0)
+            {
+                durationMs = seconds * 1000;
             }
         }
 
-        return tracks;
+        if (channel.EndsWith(" - Topic", StringComparison.OrdinalIgnoreCase))
+        {
+            string topicArtist = channel[..^" - Topic".Length].Trim();
+            if (!string.IsNullOrWhiteSpace(topicArtist))
+            {
+                return new AnalyzedTrack
+                {
+                    Artist = topicArtist,
+                    Title = rawTitle.Trim(),
+                    DurationMs = durationMs
+                };
+            }
+        }
+
+        var parsed = FallbackTrackListParser.ParseSingleLine(rawTitle);
+        if (!parsed.Artist.Equals("Various Artists", StringComparison.OrdinalIgnoreCase))
+        {
+            parsed.DurationMs = durationMs;
+            return parsed;
+        }
+
+        return new AnalyzedTrack
+        {
+            Artist = string.IsNullOrWhiteSpace(channel) ? "Various Artists" : channel.Trim(),
+            Title = rawTitle.Trim(),
+            DurationMs = durationMs
+        };
+    }
+
+    private static string ReadRunsText(JsonElement parent, string propertyName)
+    {
+        if (!parent.TryGetProperty(propertyName, out var el))
+            return string.Empty;
+
+        if (el.TryGetProperty("simpleText", out var simple))
+            return simple.GetString() ?? string.Empty;
+
+        if (el.TryGetProperty("runs", out var runs) && runs.ValueKind == JsonValueKind.Array && runs.GetArrayLength() > 0)
+        {
+            return string.Concat(runs.EnumerateArray()
+                .Select(r => r.TryGetProperty("text", out var t) ? t.GetString() : null)
+                .Where(s => !string.IsNullOrEmpty(s)));
+        }
+
+        return string.Empty;
+    }
+
+    private static string? ExtractJsonObjectAfter(string html, params string[] markers)
+    {
+        int startObj = -1;
+        foreach (var marker in markers)
+        {
+            int idx = html.IndexOf(marker, StringComparison.Ordinal);
+            if (idx >= 0)
+            {
+                startObj = html.IndexOf('{', idx + marker.Length);
+                if (startObj >= 0)
+                    break;
+            }
+        }
+
+        if (startObj < 0)
+            return null;
+
+        int depth = 0;
+        bool inString = false;
+        bool escaped = false;
+
+        for (int i = startObj; i < html.Length; i++)
+        {
+            char c = html[i];
+            if (inString)
+            {
+                if (escaped)
+                    escaped = false;
+                else if (c == '\\')
+                    escaped = true;
+                else if (c == '"')
+                    inString = false;
+                continue;
+            }
+
+            if (c == '"')
+                inString = true;
+            else if (c == '{')
+                depth++;
+            else if (c == '}')
+            {
+                depth--;
+                if (depth == 0)
+                    return html[startObj..(i + 1)];
+            }
+        }
+
+        return null;
     }
 }

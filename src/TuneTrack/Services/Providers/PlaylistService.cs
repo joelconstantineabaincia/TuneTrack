@@ -188,8 +188,8 @@ public class PlaylistService : IPlaylistService
             Tracks = tracks
         };
 
-        // Persist to database if we have tracks or a non-empty report
-        if (tracks.Count > 0 && !string.IsNullOrWhiteSpace(clientId))
+        // Persist completed analyses only (never save 0-track or partial results to history)
+        if (!isPartialResult && tracks.Count > 0 && !string.IsNullOrWhiteSpace(clientId))
         {
             try
             {

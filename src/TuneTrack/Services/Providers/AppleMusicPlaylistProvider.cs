@@ -73,8 +73,7 @@ public class AppleMusicPlaylistProvider : IPlaylistProvider
                 {
                     Title = trackTitle,
                     Artist = "Apple Music Artist",
-                    DurationMs = durationMs > 0 ? durationMs : 180000,
-                    ArtworkUrl = coverUrl
+                    DurationMs = durationMs > 0 ? durationMs : 180000
                 });
             }
 
@@ -86,7 +85,7 @@ public class AppleMusicPlaylistProvider : IPlaylistProvider
             }
 
             return PlaylistFetchResult.Partial(PlatformName, title, coverUrl,
-                "Retrieved playlist header. Paste your tracklist below to enrich and calculate diversity.");
+                "Apple Music doesn't share track lists publicly. Paste your tracks, one 'Artist - Title' per line, and we'll analyze them.");
         }
         catch (OperationCanceledException)
         {

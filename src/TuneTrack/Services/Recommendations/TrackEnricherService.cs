@@ -53,7 +53,7 @@ public class TrackEnricherService : ITrackEnricherService
             // Clean title (remove feats, parentheticals, etc.) for higher search hit rate if needed
             string cleanTitle = CleanTrackTitle(title);
             string query = Uri.EscapeDataString($"{artist} {cleanTitle}");
-            string url = $"https://itunes.apple.com/search?term={query}&entity=song&limit=1";
+            string url = $"https://itunes.apple.com/search?term={query}&entity=song&limit=5";
 
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.Add("User-Agent", "TuneTrack/1.0 (Educational Music Analytics)");
@@ -70,7 +70,7 @@ public class TrackEnricherService : ITrackEnricherService
 
             var json = await response.Content.ReadAsStringAsync(cts.Token);
             var itunesResponse = JsonSerializer.Deserialize<ITunesSearchResponse>(json);
-            var item = itunesResponse?.Results?.FirstOrDefault();
+            var item = itunesResponse?.Results?.FirstOrDefault(candidate => IsArtistMatch(artist, candidate.ArtistName));
 
             if (item == null)
             {
@@ -93,7 +93,7 @@ public class TrackEnricherService : ITrackEnricherService
             }
 
             var result = new TrackEnrichmentResult(
-                Genre: item.PrimaryGenreName,
+                Genre: NormalizeGenre(item.PrimaryGenreName),
                 ReleaseYear: releaseYear,
                 ArtworkUrl: artwork,
                 PreviewUrl: item.PreviewUrl,
@@ -139,7 +139,7 @@ public class TrackEnricherService : ITrackEnricherService
             if (enrichment != null)
             {
                 if (string.IsNullOrEmpty(track.Genre) && !string.IsNullOrEmpty(enrichment.Genre))
-                    track.Genre = enrichment.Genre;
+                    track.Genre = NormalizeGenre(enrichment.Genre);
 
                 if (!track.ReleaseYear.HasValue && enrichment.ReleaseYear.HasValue)
                     track.ReleaseYear = enrichment.ReleaseYear;
@@ -153,9 +153,88 @@ public class TrackEnricherService : ITrackEnricherService
                 if (string.IsNullOrEmpty(track.Album) && !string.IsNullOrEmpty(enrichment.Album))
                     track.Album = enrichment.Album;
             }
+            else if (!string.IsNullOrWhiteSpace(track.Genre))
+            {
+                track.Genre = NormalizeGenre(track.Genre);
+            }
         });
 
         await Task.WhenAll(tasks);
+    }
+
+    private static readonly Dictionary<string, string> GenreNormalizationMap = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["Hip-Hop"] = "Hip-Hop/Rap",
+        ["Hip Hop"] = "Hip-Hop/Rap",
+        ["Hip-Hop/Rap"] = "Hip-Hop/Rap",
+        ["Hip Hop/Rap"] = "Hip-Hop/Rap",
+        ["Rap"] = "Hip-Hop/Rap",
+        ["R&B"] = "R&B/Soul",
+        ["R&B/Soul"] = "R&B/Soul",
+        ["Soul"] = "R&B/Soul",
+        ["Electronica"] = "Electronic",
+        ["Alt-Rock"] = "Alternative",
+        ["Alternative Rock"] = "Alternative",
+        ["Indie Rock"] = "Alternative"
+    };
+
+    public static string? NormalizeGenre(string? genre)
+    {
+        if (string.IsNullOrWhiteSpace(genre))
+            return null;
+
+        string trimmed = genre.Trim();
+        return GenreNormalizationMap.TryGetValue(trimmed, out var canonical) ? canonical : trimmed;
+    }
+
+    internal static bool IsArtistMatch(string? expectedArtist, string? candidateArtist)
+    {
+        string expected = NormalizeArtistForMatch(expectedArtist);
+        string candidate = NormalizeArtistForMatch(candidateArtist);
+
+        if (string.IsNullOrEmpty(expected) || string.IsNullOrEmpty(candidate) ||
+            expected == "various artists")
+        {
+            return false;
+        }
+
+        if (expected.Contains(candidate, StringComparison.Ordinal) ||
+            candidate.Contains(expected, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        string primaryExpected = ExtractPrimaryArtist(expected);
+        string primaryCandidate = ExtractPrimaryArtist(candidate);
+        return primaryExpected.Length >= 2 && primaryCandidate.Length >= 2 &&
+               (primaryExpected.Contains(primaryCandidate, StringComparison.Ordinal) ||
+                primaryCandidate.Contains(primaryExpected, StringComparison.Ordinal));
+    }
+
+    private static string NormalizeArtistForMatch(string? artist)
+    {
+        if (string.IsNullOrWhiteSpace(artist))
+            return string.Empty;
+
+        string cleaned = artist.Trim().ToLowerInvariant();
+        // Strip featured guest suffixes so "Artist ft. Guest" compares cleanly against "Artist"
+        int featIdx = System.Text.RegularExpressions.Regex.Match(cleaned, @"\s*(?:\(|\[)?\b(?:feat\.?|ft\.?|featuring)\b").Index;
+        if (featIdx > 0 && System.Text.RegularExpressions.Regex.IsMatch(cleaned, @"\s*(?:\(|\[)?\b(?:feat\.?|ft\.?|featuring)\b"))
+        {
+            cleaned = cleaned[..featIdx];
+        }
+
+        return System.Text.RegularExpressions.Regex.Replace(cleaned, @"\s+", " ").Trim();
+    }
+
+    private static string ExtractPrimaryArtist(string normalizedArtist)
+    {
+        int sepIdx = System.Text.RegularExpressions.Regex.Match(normalizedArtist, @"\s*(?:&|,|\band\b|\bwith\b|\bx\b)\s*").Index;
+        if (sepIdx > 0 && System.Text.RegularExpressions.Regex.IsMatch(normalizedArtist, @"\s*(?:&|,|\band\b|\bwith\b|\bx\b)\s*"))
+        {
+            return normalizedArtist[..sepIdx].Trim();
+        }
+        return normalizedArtist;
     }
 
     private static string CleanTrackTitle(string title)
@@ -173,9 +252,15 @@ public class TrackEnricherService : ITrackEnricherService
             title = title[..ftIdx];
 
         int parenIdx = title.IndexOf('(');
-        if (parenIdx > 0 && (title.Contains("feat", StringComparison.OrdinalIgnoreCase) || title.Contains("with", StringComparison.OrdinalIgnoreCase) || title.Contains("remaster", StringComparison.OrdinalIgnoreCase)))
+        if (parenIdx > 0 && (title.Contains("feat", StringComparison.OrdinalIgnoreCase) || title.Contains("with", StringComparison.OrdinalIgnoreCase) || title.Contains("remaster", StringComparison.OrdinalIgnoreCase) || title.Contains("official", StringComparison.OrdinalIgnoreCase)))
         {
             title = title[..parenIdx];
+        }
+
+        int bracketIdx = title.IndexOf('[');
+        if (bracketIdx > 0 && title.Contains("official", StringComparison.OrdinalIgnoreCase))
+        {
+            title = title[..bracketIdx];
         }
 
         return title.Trim();

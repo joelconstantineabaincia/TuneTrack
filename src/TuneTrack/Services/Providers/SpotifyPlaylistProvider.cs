@@ -137,8 +137,7 @@ public class SpotifyPlaylistProvider : IPlaylistProvider
                     {
                         Title = trackTitle,
                         Artist = subtitle.Replace('\u00A0', ' ').Trim(),
-                        DurationMs = duration,
-                        ArtworkUrl = coverUrl
+                        DurationMs = duration
                     });
                 }
             }
@@ -159,7 +158,7 @@ public class SpotifyPlaylistProvider : IPlaylistProvider
             string? thumbnail = doc.RootElement.TryGetProperty("thumbnail_url", out var th) ? th.GetString() : null;
 
             return PlaylistFetchResult.Partial("Spotify", title, thumbnail,
-                "Spotify protected full track listing. Paste your tracklist below to complete diversity scoring!");
+                "Spotify doesn't share track lists publicly. Paste your tracks, one 'Artist - Title' per line, and we'll analyze them.");
         }
 
         return PlaylistFetchResult.Fail(PlatformName, "Could not fetch playlist metadata from Spotify.");

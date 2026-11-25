@@ -35,14 +35,26 @@ scripts/
   verify-ui.js           # Automated Puppeteer UI check & screenshot runner
 ```
 
-## Build & Run
+## Run Locally
+
+### Prerequisites
+- [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
+- [Node.js](https://nodejs.org/) (includes `npm`; dependencies and Tailwind CSS are built automatically on the first build)
+
+From a fresh clone, run:
 
 ```bash
-npm ci
-dotnet build
-dotnet test
 dotnet run --project src/TuneTrack
 ```
+
+Or build and run the test suite explicitly:
+
+```bash
+dotnet build
+dotnet test
+```
+
+> Supabase user-secrets configuration is **optional** — without a real connection string, TuneTrack automatically runs in EF Core In-Memory fallback mode.
 
 ## Database Setup (Supabase PostgreSQL)
 

@@ -17,8 +17,34 @@
     <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.15" />
   </ItemGroup>
 
-  <Target Name="BuildTailwind" BeforeTargets="Build">
+  <Target Name="EnsureNpmAvailable" BeforeTargets="InstallNpmDeps;BuildTailwind">
+    <Exec Command="npm --version"
+          IgnoreExitCode="true"
+          StandardOutputImportance="Low"
+          StandardErrorImportance="Low">
+      <Output TaskParameter="ExitCode" PropertyName="NpmExitCode" />
+    </Exec>
+    <Error Condition="'$(NpmExitCode)' != '0'"
+           Text="Node.js and npm are required to build TuneTrack's Tailwind CSS assets, but 'npm' was not found on PATH. Install Node.js (https://nodejs.org/) and retry." />
+  </Target>
+
+  <Target Name="InstallNpmDeps"
+          BeforeTargets="BuildTailwind"
+          DependsOnTargets="EnsureNpmAvailable"
+          Condition="!Exists('$(MSBuildProjectDirectory)/../../node_modules')">
+    <Exec Command="npm ci" WorkingDirectory="../.." />
+  </Target>
+
+  <Target Name="BuildTailwind"
+          BeforeTargets="BeforeBuild;ResolveProjectStaticWebAssets"
+          DependsOnTargets="EnsureNpmAvailable;InstallNpmDeps">
+    <PropertyGroup>
+      <_TailwindCssExistedBeforeBuild Condition="Exists('$(MSBuildProjectDirectory)/wwwroot/css/app.css')">true</_TailwindCssExistedBeforeBuild>
+    </PropertyGroup>
     <Exec Command="npm run build:css" WorkingDirectory="../.." />
+    <ItemGroup Condition="'$(_TailwindCssExistedBeforeBuild)' != 'true'">
+      <Content Include="wwwroot/css/app.css" />
+    </ItemGroup>
   </Target>
 
 </Project>

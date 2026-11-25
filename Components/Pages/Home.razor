@@ -2,6 +2,7 @@
 @rendermode InteractiveServer
 @inject IPlaylistService PlaylistService
 @inject ISamplePlaylistService SampleService
+@inject IDiversityScorer DiversityScorer
 @inject IJSRuntime JS
 @inject NavigationManager Navigation
 
@@ -11,9 +12,9 @@
     <!-- Top Search & Input Strip -->
     <div class="space-y-4">
         <div class="flex flex-col sm:flex-row gap-3">
-            <div class="relative flex-1">
-                <div class="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-zinc-500">
-                    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <div class="relative flex-1 min-w-0">
+                <div class="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-zinc-400">
+                    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
                     </svg>
                 </div>
@@ -21,8 +22,9 @@
                        @bind="inputUrl"
                        @bind:event="oninput"
                        @onkeydown="HandleKeyDown"
-                       placeholder="Paste Spotify, Apple Music, or YouTube Music playlist link..."
-                       class="w-full pl-10 pr-24 py-2.5 bg-zinc-900 border border-white/10 rounded-lg text-sm text-zinc-100 placeholder-zinc-500 focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950 outline-none transition-all" />
+                       aria-label="Playlist URL"
+                       placeholder="Paste Spotify, Apple Music, or YouTube link..."
+                       class="w-full pl-10 @(string.IsNullOrWhiteSpace(DetectedPlatform) ? "pr-4" : "pr-32") py-2.5 bg-zinc-900 border border-white/10 rounded-lg text-sm text-zinc-100 placeholder-zinc-400 focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950 outline-none transition-all" />
 
                 <!-- Auto-detected platform badge inside input -->
                 @if (!string.IsNullOrWhiteSpace(DetectedPlatform))
@@ -45,7 +47,7 @@
 
             <button @onclick="AnalyzeEnteredUrl"
                     disabled="@(isLoading || string.IsNullOrWhiteSpace(inputUrl))"
-                    class="px-5 py-2.5 bg-emerald-500 hover:bg-emerald-400 active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed text-zinc-950 font-semibold text-sm rounded-lg flex items-center justify-center gap-2 transition-all">
+                    class="px-5 py-2.5 bg-emerald-500 hover:bg-emerald-400 active:scale-[0.98] disabled:bg-zinc-800 disabled:text-zinc-400 disabled:cursor-not-allowed text-zinc-950 font-semibold text-sm rounded-lg flex items-center justify-center gap-2 transition-all focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950 outline-none">
                 @if (isLoading)
                 {
                     <svg class="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none">
@@ -61,21 +63,24 @@
             </button>
         </div>
 
-        <!-- Sample Playlists Strip -->
-        <div class="flex flex-wrap items-center gap-2 text-xs">
-            <span class="text-zinc-500 font-medium">Try offline sample:</span>
-            @foreach (var sample in SampleService.GetSamplePlaylists())
-            {
-                <button @onclick="() => LoadSample(sample.Id)"
-                        disabled="@isLoading"
-                        class="px-2.5 py-1 rounded bg-zinc-900 hover:bg-zinc-800 border border-white/5 text-zinc-300 hover:text-white transition-colors flex items-center gap-1.5">
-                    <span>@sample.Title.Split(':')[0]</span>
-                    <span class="text-[10px] px-1.5 py-0.5 rounded @(sample.DiversityBadge == "High Diversity" ? "bg-emerald-500/10 text-emerald-400" : sample.DiversityBadge == "Low Diversity" ? "bg-rose-500/10 text-rose-400" : "bg-cyan-500/10 text-cyan-400")">
-                        @sample.DiversityBadge
-                    </span>
-                </button>
-            }
-        </div>
+        <!-- Sample Playlists Strip (compact switcher when viewing results) -->
+        @if (dashboard != null || isLoading)
+        {
+            <div class="flex flex-wrap items-center gap-2 text-xs">
+                <span class="text-zinc-400 font-medium">Try offline sample:</span>
+                @foreach (var sample in SampleService.GetSamplePlaylists())
+                {
+                    <button @onclick="() => LoadSample(sample.Id)"
+                            disabled="@isLoading"
+                            class="px-2.5 py-1 rounded bg-zinc-900 hover:bg-zinc-800 border border-white/5 text-zinc-300 hover:text-white transition-colors flex items-center gap-1.5 focus-visible:ring-2 focus-visible:ring-emerald-500 outline-none">
+                        <span>@sample.Title.Split(':')[0]</span>
+                        <span class="text-[10px] px-1.5 py-0.5 rounded @(sample.DiversityBadge == "High Diversity" ? "bg-emerald-500/10 text-emerald-400" : sample.DiversityBadge == "Low Diversity" ? "bg-rose-500/10 text-rose-400" : "bg-cyan-500/10 text-cyan-400")">
+                            @sample.DiversityBadge
+                        </span>
+                    </button>
+                }
+            </div>
+        }
     </div>
 
     <!-- Error State -->
@@ -491,35 +496,79 @@
     }
     else
     {
-        <!-- Empty / Idle Hero Showcase -->
-        <div class="py-12 sm:py-20 text-center space-y-6 max-w-2xl mx-auto">
-            <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-mono">
-                <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-                <span>Playlist Analyzer</span>
+        <!-- Editorial Left-Aligned Idle State -->
+        <div class="pt-4 pb-8 space-y-10">
+            <div class="space-y-3 max-w-2xl">
+                <h1 class="text-3xl sm:text-4xl font-bold tracking-tight text-white leading-[1.15]">
+                    Inspect genre balance, artist variety, and track diversity.
+                </h1>
+                <p class="text-sm sm:text-base text-zinc-400 leading-relaxed">
+                    Paste any public link from Spotify, Apple Music, or YouTube Music. TuneTrack measures genre balance, artist variety, and era spread, then recommends complementary tracks.
+                </p>
             </div>
 
-            <h2 class="text-3xl sm:text-5xl font-extrabold tracking-tight text-white leading-tight">
-                Inspect genre balance, artist variety, and track diversity.
-            </h2>
-
-            <p class="text-sm sm:text-base text-zinc-400 leading-relaxed">
-                Paste any public link from Spotify, Apple Music, or YouTube Music. TuneTrack detects the platform, calculates Shannon entropy metrics, and recommends complementary music.
-            </p>
-
-            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-6 text-left">
-                <div class="p-4 rounded-xl bg-zinc-900/50 border border-white/5 space-y-1.5">
-                    <span class="text-emerald-400 text-sm font-semibold">1. Paste Link</span>
-                    <p class="text-xs text-zinc-400">Supports Spotify embed, Apple Music JSON-LD, and YouTube Music playlists.</p>
+            <!-- Borderless 3-column summary row in neutral tone -->
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-6 sm:gap-8 pt-6 border-t border-white/10">
+                <div class="space-y-1">
+                    <p class="text-sm font-medium text-zinc-100">Link or paste tracklists</p>
+                    <p class="text-xs text-zinc-400 leading-relaxed">Works with Spotify, Apple Music, and YouTube Music links, or pasted tracklists.</p>
                 </div>
-                <div class="p-4 rounded-xl bg-zinc-900/50 border border-white/5 space-y-1.5">
-                    <span class="text-cyan-400 text-sm font-semibold">2. Score Diversity</span>
-                    <p class="text-xs text-zinc-400">Weighted score across genre variety, artist uniqueness, and decade spread.</p>
+                <div class="space-y-1">
+                    <p class="text-sm font-medium text-zinc-100">Score diversity</p>
+                    <p class="text-xs text-zinc-400 leading-relaxed">Weighted breakdown across genre balance, artist variety, and era spread.</p>
                 </div>
-                <div class="p-4 rounded-xl bg-zinc-900/50 border border-white/5 space-y-1.5">
-                    <span class="text-purple-400 text-sm font-semibold">3. Expand Palette</span>
-                    <p class="text-xs text-zinc-400">Real tailored track suggestions from iTunes with playable 30-sec previews.</p>
+                <div class="space-y-1">
+                    <p class="text-sm font-medium text-zinc-100">Discover additions</p>
+                    <p class="text-xs text-zinc-400 leading-relaxed">Tailored track suggestions with 30-second audio previews and bookmarks.</p>
                 </div>
             </div>
+
+            <!-- Sample Playlists as Editorial Cover Tiles -->
+            <section class="space-y-4 pt-2" aria-labelledby="sample-playlists-heading">
+                <div class="flex items-baseline justify-between border-b border-white/10 pb-3">
+                    <h2 id="sample-playlists-heading" class="text-xs uppercase tracking-wider font-semibold text-zinc-400">
+                        Sample playlists
+                    </h2>
+                    <span class="text-xs text-zinc-400">Offline ready</span>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
+                    @foreach (var sample in SampleService.GetSamplePlaylists())
+                    {
+                        var sampleScore = DiversityScorer.CalculateScore(sample.Tracks);
+                        <button type="button"
+                                @onclick="() => LoadSample(sample.Id)"
+                                disabled="@isLoading"
+                                class="group text-left rounded-xl bg-zinc-900/40 hover:bg-zinc-900/80 p-3 transition-colors focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950 outline-none">
+                            <div class="relative aspect-[16/10] w-full rounded-lg overflow-hidden bg-zinc-800">
+                                <img src="@sample.CoverUrl"
+                                     alt="@sample.Title cover art"
+                                     loading="lazy"
+                                     class="w-full h-full object-cover group-hover:scale-[1.03] transition-transform duration-300" />
+                                <div class="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent"></div>
+                                <div class="absolute bottom-2.5 left-3 right-3 flex items-center justify-between gap-2">
+                                    <span class="text-[11px] font-medium text-zinc-200 truncate">
+                                        @sample.Platform · @sample.Tracks.Count tracks
+                                    </span>
+                                    <span class="inline-flex items-baseline gap-0.5 px-2 py-0.5 rounded bg-zinc-950/90 font-mono tabular-nums text-xs flex-shrink-0">
+                                        <span class="font-bold @GetScoreColor(sampleScore.TotalScore)">@sampleScore.TotalScore.ToString("0")</span>
+                                        <span class="text-zinc-400 text-[10px]">/100</span>
+                                    </span>
+                                </div>
+                            </div>
+
+                            <div class="pt-3 px-0.5 space-y-1">
+                                <p class="text-sm font-semibold text-white group-hover:text-emerald-400 transition-colors truncate">
+                                    @sample.Title
+                                </p>
+                                <p class="text-xs text-zinc-400 line-clamp-2 leading-relaxed">
+                                    @sample.Description
+                                </p>
+                            </div>
+                        </button>
+                    }
+                </div>
+            </section>
         </div>
     }
 </div>

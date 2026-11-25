@@ -31,6 +31,43 @@ async function run() {
     try {
         console.log("1. Navigating to http://127.0.0.1:5199...");
         await page.goto('http://127.0.0.1:5199', { waitUntil: 'networkidle0', timeout: 15000 });
+        await new Promise(r => setTimeout(r, 800));
+
+        // Capture idle screenshot at 1440px and audit DOM metrics
+        const idle1440Path = path.join(docsDir, 'screenshot-1440-idle.png');
+        await page.screenshot({ path: idle1440Path, fullPage: false });
+        console.log("✓ Captured idle 1440px screenshot:", idle1440Path);
+
+        const audit1440 = await page.evaluate(() => {
+            const overflowX = document.documentElement.scrollWidth > document.documentElement.clientWidth;
+            const h1Count = document.querySelectorAll('h1').length;
+            const imgs = Array.from(document.querySelectorAll('img')).map(i => ({ alt: i.alt, loaded: i.complete && i.naturalWidth > 0 }));
+            const navLinks = Array.from(document.querySelectorAll('header nav a')).map(a => ({ text: a.textContent.trim(), rect: a.getBoundingClientRect() }));
+            const hasActiveDot = document.body.innerText.includes('Active');
+            return { overflowX, h1Count, imgs, navLinks, hasActiveDot };
+        });
+        console.log("AUDIT 1440px:", JSON.stringify(audit1440));
+
+        // Capture idle screenshot at 390px and audit mobile metrics
+        await page.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true });
+        await new Promise(r => setTimeout(r, 500));
+        const idle390Path = path.join(docsDir, 'screenshot-390-idle.png');
+        await page.screenshot({ path: idle390Path, fullPage: true });
+        console.log("✓ Captured idle 390px screenshot:", idle390Path);
+
+        const audit390 = await page.evaluate(() => {
+            const overflowX = document.documentElement.scrollWidth > document.documentElement.clientWidth;
+            const buttons = Array.from(document.querySelectorAll('button')).map(b => {
+                const r = b.getBoundingClientRect();
+                return { text: (b.innerText || b.getAttribute('aria-label') || '').slice(0, 30), w: Math.round(r.width), h: Math.round(r.height) };
+            });
+            return { overflowX, buttons };
+        });
+        console.log("AUDIT 390px:", JSON.stringify(audit390));
+
+        // Reset viewport to 1440x900 for sample click & E2E verification
+        await page.setViewport({ width: 1440, height: 900 });
+        await new Promise(r => setTimeout(r, 300));
 
         // 2. Click "Eclectic Horizon" sample
         console.log("2. Clicking 'Eclectic Horizon' sample button...");

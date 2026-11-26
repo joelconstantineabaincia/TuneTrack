@@ -7,6 +7,7 @@
 @inject IDiversityScorer DiversityScorer
 @inject IJSRuntime JS
 @inject NavigationManager Navigation
+@inject ILogger<Home> Logger
 
 <PageTitle>Playlist Analyzer — TuneTrack</PageTitle>
 
@@ -492,6 +493,17 @@
                         <span class="text-xs text-zinc-400 font-mono">Audio previews</span>
                     </div>
                     <span class="sr-only" aria-live="polite">@(copiedTrackTitle != null ? $"Copied {copiedTrackTitle} to clipboard" : "")</span>
+                    @if (!string.IsNullOrEmpty(bookmarkErrorMessage))
+                    {
+                        <div role="alert" class="p-3 rounded-lg bg-red-950/40 border border-red-500/20 text-red-200 text-xs flex items-center justify-between gap-3">
+                            <span>@bookmarkErrorMessage</span>
+                            <button type="button"
+                                    @onclick="() => bookmarkErrorMessage = null"
+                                    class="text-red-300 hover:text-white text-xs font-medium px-2 py-1 rounded focus-visible:ring-2 focus-visible:ring-emerald-500 outline-none">
+                                Dismiss
+                            </button>
+                        </div>
+                    }
 
                     @if (dashboard.Recommendations.Count == 0)
                     {
@@ -502,10 +514,12 @@
                         <div class="divide-y divide-white/5">
                             @foreach (var rec in dashboard.Recommendations)
                             {
-                                bool isSaved = savedTrackTitles.Contains(rec.Title);
+                                string trackKey = BuildTrackKey(rec.Title, rec.Artist);
+                                bool isSaved = savedTrackKeys.Contains(trackKey);
+                                bool isCopied = string.Equals(copiedTrackKey, trackKey, StringComparison.OrdinalIgnoreCase);
                                 bool isPlaying = currentPlayingPreview == rec.PreviewUrl && !string.IsNullOrEmpty(rec.PreviewUrl);
 
-                                <div class="py-3 first:pt-1 last:pb-1 hover:bg-white/[0.04] transition-colors flex items-center justify-between gap-3 group">
+                                <div class="py-3 first:pt-1 last:pb-1 hover:bg-white/[0.04] transition-colors flex items-center justify-between gap-2.5 group">
                                     <div class="flex items-center gap-3 min-w-0 flex-1">
                                         <!-- Artwork with Visible Preview Play Button -->
                                         <div class="relative w-11 h-11 rounded overflow-hidden bg-zinc-800 flex-shrink-0">
@@ -548,22 +562,25 @@
                                     </div>
 
                                     <!-- Action Buttons: Copy & Bookmark -->
-                                    <div class="flex items-center gap-2 flex-shrink-0">
+                                    <div class="flex items-center gap-1 flex-shrink-0">
                                         <!-- Copy button -->
                                         <button type="button"
                                                 @onclick="() => CopyTrack(rec)"
-                                                title="Copy Title — Artist"
+                                                title="@(isCopied ? "Copied" : "Copy Title — Artist")"
                                                 aria-label="Copy @rec.Title by @rec.Artist"
-                                                class="p-2 rounded hover:bg-white/10 text-zinc-400 hover:text-white transition-colors focus-visible:ring-2 focus-visible:ring-emerald-500 outline-none">
-                                            @if (copiedTrackTitle == rec.Title)
+                                                class="min-w-[44px] min-h-[44px] inline-flex items-center justify-center px-2 rounded-lg hover:bg-white/10 active:scale-[0.98] transition-all focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950 outline-none @(isCopied ? "text-emerald-400 bg-emerald-500/10" : "text-zinc-300 hover:text-white")">
+                                            @if (isCopied)
                                             {
-                                                <svg class="w-3.5 h-3.5 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
-                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
-                                                </svg>
+                                                <span class="inline-flex items-center gap-1 text-[11px] font-medium whitespace-nowrap">
+                                                    <svg class="w-3.5 h-3.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                                                    </svg>
+                                                    <span>Copied</span>
+                                                </span>
                                             }
                                             else
                                             {
-                                                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                                                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
                                                 </svg>
                                             }
@@ -573,9 +590,10 @@
                                         <button type="button"
                                                 @onclick="() => ToggleBookmark(rec)"
                                                 title="@(isSaved ? "Saved in Bookmarks" : "Bookmark this suggestion")"
-                                                aria-label="@(isSaved ? $"Remove bookmark for {rec.Title}" : $"Bookmark {rec.Title}")"
-                                                class="p-2 rounded hover:bg-white/10 transition-colors focus-visible:ring-2 focus-visible:ring-emerald-500 outline-none @(isSaved ? "text-emerald-400" : "text-zinc-400 hover:text-white")">
-                                            <svg class="w-3.5 h-3.5" fill="@(isSaved ? "currentColor" : "none")" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                                                aria-label="@(isSaved ? $"Remove bookmark for {rec.Title} by {rec.Artist}" : $"Bookmark {rec.Title} by {rec.Artist}")"
+                                                aria-pressed="@(isSaved ? "true" : "false")"
+                                                class="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-lg active:scale-[0.98] transition-all focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950 outline-none @(isSaved ? "text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/15" : "text-zinc-300 hover:text-white hover:bg-white/10")">
+                                            <svg class="w-4 h-4" fill="@(isSaved ? "currentColor" : "none")" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
                                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
                                             </svg>
                                         </button>
@@ -685,7 +703,9 @@
     // Audio preview & interaction
     private string? currentPlayingPreview;
     private string? copiedTrackTitle;
-    private HashSet<string> savedTrackTitles = new(StringComparer.OrdinalIgnoreCase);
+    private string? copiedTrackKey;
+    private string? bookmarkErrorMessage;
+    private HashSet<string> savedTrackKeys = new(StringComparer.OrdinalIgnoreCase);
 
     // Partial result fallback paste
     private const string PastedTrackListPlaceholder =
@@ -979,8 +999,17 @@
     private async Task LoadSavedTrackState()
     {
         if (string.IsNullOrWhiteSpace(clientId)) return;
-        var saved = await PlaylistService.GetSavedRecommendationsAsync(clientId);
-        savedTrackTitles = saved.Select(s => s.Title).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            var saved = await PlaylistService.GetSavedRecommendationsAsync(clientId);
+            savedTrackKeys = saved
+                .Select(s => BuildTrackKey(s.Title, s.Artist))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to load saved recommendations for client {ClientId}", clientId);
+        }
     }
 
     private async Task TogglePreview(string? previewUrl)
@@ -1013,12 +1042,15 @@
         bool success = await JS.InvokeAsync<bool>("tuneTrack.copyToClipboard", text);
         if (success)
         {
+            string key = BuildTrackKey(rec.Title, rec.Artist);
             copiedTrackTitle = rec.Title;
+            copiedTrackKey = key;
             StateHasChanged();
             await Task.Delay(1500);
-            if (copiedTrackTitle == rec.Title)
+            if (string.Equals(copiedTrackKey, key, StringComparison.OrdinalIgnoreCase))
             {
                 copiedTrackTitle = null;
+                copiedTrackKey = null;
                 StateHasChanged();
             }
         }
@@ -1026,27 +1058,61 @@
 
     private async Task ToggleBookmark(TrackSuggestion rec)
     {
-        if (string.IsNullOrWhiteSpace(clientId)) return;
+        bookmarkErrorMessage = null;
 
-        if (savedTrackTitles.Contains(rec.Title))
+        if (string.IsNullOrWhiteSpace(clientId))
         {
-            // Remove
-            var saved = await PlaylistService.GetSavedRecommendationsAsync(clientId);
-            var item = saved.FirstOrDefault(s => s.Title.Equals(rec.Title, StringComparison.OrdinalIgnoreCase));
-            if (item != null)
+            try
             {
-                await PlaylistService.RemoveSavedRecommendationAsync(item.Id, clientId);
-                savedTrackTitles.Remove(rec.Title);
+                clientId = await JS.InvokeAsync<string>("tuneTrack.getClientId");
+            }
+            catch (Exception ex)
+            {
+                Logger.LogError(ex, "Failed to resolve client identifier while bookmarking {Title}", rec.Title);
+                bookmarkErrorMessage = "Couldn't save, try again";
+                return;
             }
         }
-        else
+
+        if (string.IsNullOrWhiteSpace(clientId))
         {
-            // Save
-            await PlaylistService.SaveRecommendationAsync(clientId, rec, dashboard?.Playlist.Id);
-            savedTrackTitles.Add(rec.Title);
+            Logger.LogWarning("Cannot bookmark '{Title}' by '{Artist}' without a client identifier.", rec.Title, rec.Artist);
+            bookmarkErrorMessage = "Couldn't save, try again";
+            return;
         }
+
+        string key = BuildTrackKey(rec.Title, rec.Artist);
+        int? sourcePlaylistId = dashboard?.Playlist.Id > 0 ? dashboard.Playlist.Id : null;
+
+        try
+        {
+            var (success, nowSaved) = await PlaylistService.ToggleSavedRecommendationAsync(clientId, rec, sourcePlaylistId);
+            if (!success)
+            {
+                bookmarkErrorMessage = "Couldn't save, try again";
+                return;
+            }
+
+            if (nowSaved)
+            {
+                savedTrackKeys.Add(key);
+            }
+            else
+            {
+                savedTrackKeys.Remove(key);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to toggle bookmark for '{Title}' by '{Artist}'", rec.Title, rec.Artist);
+            bookmarkErrorMessage = "Couldn't save, try again";
+        }
+
         StateHasChanged();
     }
+
+    private static string BuildTrackKey(string title, string artist) =>
+        $"{title.Trim()}\0{artist.Trim()}";
 
     private List<AnalyzedTrack> GetFilteredTracks()
     {

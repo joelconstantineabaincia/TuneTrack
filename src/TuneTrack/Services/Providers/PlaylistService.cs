@@ -29,6 +29,7 @@ public interface IPlaylistService
     Task<bool> DeleteHistoryItemAsync(int id, string clientId, CancellationToken cancellationToken = default);
     Task<List<SavedRecommendation>> GetSavedRecommendationsAsync(string clientId, CancellationToken cancellationToken = default);
     Task<bool> SaveRecommendationAsync(string clientId, TrackSuggestion suggestion, int? sourcePlaylistId, CancellationToken cancellationToken = default);
+    Task<(bool Success, bool IsSaved)> ToggleSavedRecommendationAsync(string clientId, TrackSuggestion suggestion, int? sourcePlaylistId, CancellationToken cancellationToken = default);
     Task<bool> RemoveSavedRecommendationAsync(int id, string clientId, CancellationToken cancellationToken = default);
     Task<bool> IsRecommendationSavedAsync(string clientId, string title, string artist, CancellationToken cancellationToken = default);
 }
@@ -276,48 +277,127 @@ public class PlaylistService : IPlaylistService
 
     public async Task<bool> SaveRecommendationAsync(string clientId, TrackSuggestion suggestion, int? sourcePlaylistId, CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(clientId)) return false;
-
-        bool alreadySaved = await _db.SavedRecommendations.AnyAsync(
-            s => s.ClientId == clientId && s.Title == suggestion.Title && s.Artist == suggestion.Artist,
-            cancellationToken);
-
-        if (alreadySaved) return true;
-
-        var entity = new SavedRecommendation
+        if (string.IsNullOrWhiteSpace(clientId) ||
+            string.IsNullOrWhiteSpace(suggestion?.Title) ||
+            string.IsNullOrWhiteSpace(suggestion?.Artist))
         {
-            ClientId = clientId,
-            Title = suggestion.Title,
-            Artist = suggestion.Artist,
-            Genre = suggestion.Genre,
-            ArtworkUrl = suggestion.ArtworkUrl,
-            SourcePlaylistId = sourcePlaylistId,
-            SavedAt = DateTime.UtcNow
-        };
+            return false;
+        }
 
-        _db.SavedRecommendations.Add(entity);
-        await _db.SaveChangesAsync(cancellationToken);
-        return true;
+        string titleLower = suggestion.Title.Trim().ToLowerInvariant();
+        string artistLower = suggestion.Artist.Trim().ToLowerInvariant();
+
+        try
+        {
+            bool alreadySaved = await _db.SavedRecommendations.AnyAsync(
+                s => s.ClientId == clientId &&
+                     s.Title.ToLower() == titleLower &&
+                     s.Artist.ToLower() == artistLower,
+                cancellationToken);
+
+            if (alreadySaved) return true;
+
+            int? validSourcePlaylistId = null;
+            if (sourcePlaylistId is > 0 &&
+                await _db.AnalyzedPlaylists.AnyAsync(p => p.Id == sourcePlaylistId.Value, cancellationToken))
+            {
+                validSourcePlaylistId = sourcePlaylistId.Value;
+            }
+
+            var entity = new SavedRecommendation
+            {
+                ClientId = Truncate(clientId.Trim(), 64),
+                Title = Truncate(suggestion.Title.Trim(), 256),
+                Artist = Truncate(suggestion.Artist.Trim(), 256),
+                Genre = string.IsNullOrWhiteSpace(suggestion.Genre) ? null : Truncate(suggestion.Genre.Trim(), 128),
+                ArtworkUrl = string.IsNullOrWhiteSpace(suggestion.ArtworkUrl) ? null : Truncate(suggestion.ArtworkUrl.Trim(), 2048),
+                SourcePlaylistId = validSourcePlaylistId,
+                SavedAt = DateTime.UtcNow
+            };
+
+            _db.SavedRecommendations.Add(entity);
+            await _db.SaveChangesAsync(cancellationToken);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to save recommendation '{Title}' by '{Artist}' for client {ClientId}", suggestion.Title, suggestion.Artist, clientId);
+            return false;
+        }
+    }
+
+    public async Task<(bool Success, bool IsSaved)> ToggleSavedRecommendationAsync(string clientId, TrackSuggestion suggestion, int? sourcePlaylistId, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(clientId) ||
+            string.IsNullOrWhiteSpace(suggestion?.Title) ||
+            string.IsNullOrWhiteSpace(suggestion?.Artist))
+        {
+            return (false, false);
+        }
+
+        string titleLower = suggestion.Title.Trim().ToLowerInvariant();
+        string artistLower = suggestion.Artist.Trim().ToLowerInvariant();
+
+        try
+        {
+            var existing = await _db.SavedRecommendations.FirstOrDefaultAsync(
+                s => s.ClientId == clientId &&
+                     s.Title.ToLower() == titleLower &&
+                     s.Artist.ToLower() == artistLower,
+                cancellationToken);
+
+            if (existing != null)
+            {
+                _db.SavedRecommendations.Remove(existing);
+                await _db.SaveChangesAsync(cancellationToken);
+                return (true, false);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to toggle recommendation '{Title}' by '{Artist}' for client {ClientId}", suggestion.Title, suggestion.Artist, clientId);
+            return (false, false);
+        }
+
+        bool saved = await SaveRecommendationAsync(clientId, suggestion, sourcePlaylistId, cancellationToken);
+        return (saved, saved);
     }
 
     public async Task<bool> RemoveSavedRecommendationAsync(int id, string clientId, CancellationToken cancellationToken = default)
     {
-        var item = await _db.SavedRecommendations.FirstOrDefaultAsync(s => s.Id == id && s.ClientId == clientId, cancellationToken);
-        if (item == null) return false;
+        try
+        {
+            var item = await _db.SavedRecommendations.FirstOrDefaultAsync(s => s.Id == id && s.ClientId == clientId, cancellationToken);
+            if (item == null) return false;
 
-        _db.SavedRecommendations.Remove(item);
-        await _db.SaveChangesAsync(cancellationToken);
-        return true;
+            _db.SavedRecommendations.Remove(item);
+            await _db.SaveChangesAsync(cancellationToken);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to remove saved recommendation {Id} for client {ClientId}", id, clientId);
+            return false;
+        }
     }
 
     public async Task<bool> IsRecommendationSavedAsync(string clientId, string title, string artist, CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(clientId)) return false;
+        if (string.IsNullOrWhiteSpace(clientId) || string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(artist))
+            return false;
+
+        string titleLower = title.Trim().ToLowerInvariant();
+        string artistLower = artist.Trim().ToLowerInvariant();
 
         return await _db.SavedRecommendations.AnyAsync(
-            s => s.ClientId == clientId && s.Title == title && s.Artist == artist,
+            s => s.ClientId == clientId &&
+                 s.Title.ToLower() == titleLower &&
+                 s.Artist.ToLower() == artistLower,
             cancellationToken);
     }
+
+    private static string Truncate(string value, int maxLength) =>
+        value.Length <= maxLength ? value : value[..maxLength];
 
     private static string FormatDuration(long totalMs)
     {

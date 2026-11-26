@@ -22,11 +22,15 @@ window.tuneTrack = {
     },
 
     copyToClipboard: async function (text) {
-        try {
-            if (navigator.clipboard && navigator.clipboard.writeText) {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            try {
                 await navigator.clipboard.writeText(text);
                 return true;
+            } catch (err) {
+                // Fall back to execCommand when SignalR async callback loses transient activation
             }
+        }
+        try {
             var textarea = document.createElement("textarea");
             textarea.value = text;
             textarea.style.position = "fixed";

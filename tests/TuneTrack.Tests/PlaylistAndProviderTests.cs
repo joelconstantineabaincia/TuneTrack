@@ -3,6 +3,7 @@ namespace TuneTrack.Tests;
 using System.Net;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using TuneTrack.Data;
 using TuneTrack.Models;
@@ -175,6 +176,114 @@ public class PlaylistAndProviderTests
         Assert.Equal(2, (await service.GetHistoryAsync(clientId)).Count);
     }
 
+    [Fact]
+    public async Task PlaylistService_SaveAndToggleRecommendations_PersistsAndNormalizesSourcePlaylistId()
+    {
+        string dbName = $"TuneTrackSavedTests_{Guid.NewGuid()}";
+        var dbOptions = new DbContextOptionsBuilder<AppDbContext>()
+            .UseInMemoryDatabase(dbName)
+            .Options;
+
+        int validPlaylistId;
+        await using (var db = new AppDbContext(dbOptions))
+        {
+            var playlist = new AnalyzedPlaylist
+            {
+                ClientId = "client-a",
+                SourceUrl = "https://open.spotify.com/playlist/valid",
+                Platform = "Spotify",
+                Title = "Valid Mix",
+                TrackCount = 1,
+                TotalDuration = "3m 0s"
+            };
+            db.AnalyzedPlaylists.Add(playlist);
+            await db.SaveChangesAsync();
+            validPlaylistId = playlist.Id;
+        }
+
+        var suggestionA = new TrackSuggestion("Time", "Pink Floyd", "Rock", "https://art/1.jpg", "https://prev/1.m4a", "Reason");
+        var suggestionSameTitleDifferentArtist = new TrackSuggestion("Time", "Hans Zimmer", "Soundtrack", "https://art/2.jpg", "https://prev/2.m4a", "Reason");
+        var suggestionNullSource = new TrackSuggestion("Midnight City", "M83", "Electronic", "https://art/3.jpg", "https://prev/3.m4a", "Reason");
+
+        await using (var db = new AppDbContext(dbOptions))
+        {
+            var service = new PlaylistService(
+                Array.Empty<IPlaylistProvider>(),
+                new SamplePlaylistService(),
+                new DiversityScorer(),
+                new EmptyRecommender(),
+                new NullEnricher(),
+                db,
+                NullLogger<PlaylistService>.Instance);
+
+            Assert.True(await service.SaveRecommendationAsync("client-a", suggestionA, validPlaylistId));
+            // Repeat save deduplicates
+            Assert.True(await service.SaveRecommendationAsync("client-a", suggestionA, validPlaylistId));
+            // Sample / unpersisted source playlist IDs (0 or nonexistent) normalize to null
+            Assert.True(await service.SaveRecommendationAsync("client-a", suggestionSameTitleDifferentArtist, 0));
+            Assert.True(await service.SaveRecommendationAsync("client-a", suggestionNullSource, 999999));
+
+            // Toggle removes only the matching (Title, Artist) row
+            var toggleOff = await service.ToggleSavedRecommendationAsync("client-a", suggestionA, validPlaylistId);
+            Assert.Equal((true, false), toggleOff);
+
+            var remaining = await service.GetSavedRecommendationsAsync("client-a");
+            Assert.Equal(2, remaining.Count);
+            Assert.DoesNotContain(remaining, r => r.Artist == "Pink Floyd");
+            Assert.All(remaining, r => Assert.Null(r.SourcePlaylistId));
+
+            // Toggle back on persists
+            var toggleOn = await service.ToggleSavedRecommendationAsync("client-a", suggestionA, validPlaylistId);
+            Assert.Equal((true, true), toggleOn);
+        }
+
+        // Fresh context simulates page reload
+        await using (var reloadDb = new AppDbContext(dbOptions))
+        {
+            var reloadService = new PlaylistService(
+                Array.Empty<IPlaylistProvider>(),
+                new SamplePlaylistService(),
+                new DiversityScorer(),
+                new EmptyRecommender(),
+                new NullEnricher(),
+                reloadDb,
+                NullLogger<PlaylistService>.Instance);
+
+            var clientASaved = await reloadService.GetSavedRecommendationsAsync("client-a");
+            Assert.Equal(3, clientASaved.Count);
+            Assert.Contains(clientASaved, r => r.Artist == "Pink Floyd" && r.SourcePlaylistId == validPlaylistId);
+            Assert.Empty(await reloadService.GetSavedRecommendationsAsync("client-b"));
+        }
+    }
+
+    [Fact]
+    public async Task PlaylistService_SaveAndToggle_LogsAndReturnsFalseWhenSaveFails()
+    {
+        var dbOptions = new DbContextOptionsBuilder<AppDbContext>()
+            .UseInMemoryDatabase($"TuneTrackFailingSaveTests_{Guid.NewGuid()}")
+            .Options;
+        await using var db = new FailingSaveDbContext(dbOptions);
+        var logger = new RecordingLogger<PlaylistService>();
+
+        var service = new PlaylistService(
+            Array.Empty<IPlaylistProvider>(),
+            new SamplePlaylistService(),
+            new DiversityScorer(),
+            new EmptyRecommender(),
+            new NullEnricher(),
+            db,
+            logger);
+
+        var suggestion = new TrackSuggestion("Song", "Artist", "Indie", null, null, "Reason");
+
+        bool saveResult = await service.SaveRecommendationAsync("client-a", suggestion, sourcePlaylistId: null);
+        var toggleResult = await service.ToggleSavedRecommendationAsync("client-a", suggestion, sourcePlaylistId: null);
+
+        Assert.False(saveResult);
+        Assert.Equal((false, false), toggleResult);
+        Assert.Contains(logger.Entries, e => e.Level == LogLevel.Error);
+    }
+
     private sealed class StubPartialProvider : IPlaylistProvider
     {
         public string PlatformName => "Spotify";
@@ -238,5 +347,22 @@ public class PlaylistAndProviderTests
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
             => Task.FromResult(responder(request));
+    }
+
+    private sealed class FailingSaveDbContext(DbContextOptions<AppDbContext> options) : AppDbContext(options)
+    {
+        public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
+            => throw new DbUpdateException("Simulated database write failure");
+    }
+
+    private sealed class RecordingLogger<T> : ILogger<T>
+    {
+        public List<(LogLevel Level, string Message, Exception? Exception)> Entries { get; } = new();
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+            => Entries.Add((logLevel, formatter(state, exception), exception));
     }
 }

@@ -63,10 +63,13 @@ public class PlaylistAndProviderTests
             enricher,
             NullLogger<SpotifyPlaylistProvider>.Instance);
 
-        var result = await provider.GetPlaylistAsync(new Uri("https://open.spotify.com/playlist/big51"));
+        var progress = new Progress<(int Completed, int Total)>();
+        var result = await provider.GetPlaylistAsync(new Uri("https://open.spotify.com/playlist/big51"), progress, CancellationToken.None);
 
         Assert.Equal(35, result.Tracks.Count);
         Assert.Equal(35, enricher.RequestedMaxToEnrich >= 35 ? 35 : enricher.EnrichedCount);
+        Assert.Same(progress, enricher.CapturedProgress);
+        Assert.False(enricher.CapturedCancellationToken.CanBeCanceled);
     }
 
     [Fact]
@@ -193,13 +196,24 @@ public class PlaylistAndProviderTests
     {
         public int RequestedMaxToEnrich { get; private set; }
         public int EnrichedCount { get; private set; }
+        public IProgress<(int Completed, int Total)>? CapturedProgress { get; private set; }
+        public CancellationToken CapturedCancellationToken { get; private set; }
 
         public Task<TrackEnrichmentResult?> LookupTrackAsync(string artist, string title, CancellationToken cancellationToken = default) =>
             Task.FromResult<TrackEnrichmentResult?>(null);
 
-        public Task EnrichTracksAsync(IList<AnalyzedTrack> tracks, int maxToEnrich = 25, CancellationToken cancellationToken = default)
+        public Task EnrichTracksAsync(IList<AnalyzedTrack> tracks, int maxToEnrich = 25, CancellationToken cancellationToken = default) =>
+            EnrichTracksAsync(tracks, progress: null, maxToEnrich, cancellationToken);
+
+        public Task EnrichTracksAsync(
+            IList<AnalyzedTrack> tracks,
+            IProgress<(int Completed, int Total)>? progress,
+            int maxToEnrich = 100,
+            CancellationToken cancellationToken = default)
         {
             RequestedMaxToEnrich = maxToEnrich;
+            CapturedProgress = progress;
+            CapturedCancellationToken = cancellationToken;
             EnrichedCount = Math.Min(tracks.Count, maxToEnrich);
             foreach (var track in tracks.Take(maxToEnrich))
             {

@@ -267,9 +267,18 @@ public class TrackEnricherService : ITrackEnricherService
         }
         finally
         {
-            // Polite delay between iTunes queries to respect ~20 req/min rate limit
-            await Task.Delay(PoliteThrottleDelay, cancellationToken).ConfigureAwait(false);
-            _throttle.Release();
+            try
+            {
+                // Polite delay between iTunes queries to respect ~20 req/min rate limit
+                await Task.Delay(PoliteThrottleDelay, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            finally
+            {
+                _throttle.Release();
+            }
         }
     }
 

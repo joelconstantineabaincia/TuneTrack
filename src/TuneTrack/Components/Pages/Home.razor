@@ -750,21 +750,22 @@
         if (string.IsNullOrWhiteSpace(inputUrl)) return;
 
         var cts = BeginLoadingProgress();
+        var token = cts.Token;
         showPasteFallback = false;
         pastedTrackList = "";
         dashboard = null;
 
         try
         {
-            var progress = CreateMatchProgress(cts.Token);
-            dashboard = await PlaylistService.AnalyzeUrlAsync(inputUrl.Trim(), clientId, progress, cts.Token);
+            var progress = CreateMatchProgress(token);
+            dashboard = await PlaylistService.AnalyzeUrlAsync(inputUrl.Trim(), clientId, progress, token);
             if (dashboard.IsPartialResult || dashboard.Playlist.Tracks.Count == 0)
             {
                 showPasteFallback = true;
             }
             await RefreshLocalDisplayDate();
         }
-        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
         }
         catch (Exception ex)
@@ -780,16 +781,17 @@
     private async Task LoadSample(string sampleId)
     {
         var cts = BeginLoadingProgress();
+        var token = cts.Token;
         showPasteFallback = false;
         pastedTrackList = "";
         dashboard = null;
 
         try
         {
-            dashboard = await PlaylistService.AnalyzeSampleAsync(sampleId, clientId, cts.Token);
+            dashboard = await PlaylistService.AnalyzeSampleAsync(sampleId, clientId, token);
             await RefreshLocalDisplayDate();
         }
-        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
         }
         catch (Exception ex)
@@ -807,10 +809,11 @@
         if (string.IsNullOrWhiteSpace(pastedTrackList) || dashboard == null) return;
 
         var cts = BeginLoadingProgress();
+        var token = cts.Token;
 
         try
         {
-            var progress = CreateMatchProgress(cts.Token);
+            var progress = CreateMatchProgress(token);
             dashboard = await PlaylistService.AnalyzeManualTrackListAsync(
                 title: dashboard.Playlist.Title,
                 platform: dashboard.Playlist.Platform,
@@ -818,13 +821,13 @@
                 rawTrackList: pastedTrackList,
                 clientId: clientId,
                 progress: progress,
-                cancellationToken: cts.Token
+                cancellationToken: token
             );
             showPasteFallback = false;
             pastedTrackList = "";
             await RefreshLocalDisplayDate();
         }
-        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
         }
         catch (Exception ex)
@@ -889,7 +892,7 @@
             _ = InvokeAsync(() =>
             {
                 if (token.IsCancellationRequested) return;
-                matchingCompleted = p.Completed;
+                matchingCompleted = Math.Max(matchingCompleted, p.Completed);
                 matchingTotal = p.Total;
                 if ((DateTime.UtcNow - loadingStartedUtc).TotalSeconds >= 2)
                 {

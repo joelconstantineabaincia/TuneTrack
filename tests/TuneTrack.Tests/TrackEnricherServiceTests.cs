@@ -442,13 +442,17 @@ public class TrackEnricherServiceTests
         await enricher.LookupTrackAsync("MatchArtist", "Take On Me - Single Version");
         await enricher.LookupTrackAsync("MatchArtist", "Hotel California (Live)");
         await enricher.LookupTrackAsync("MatchArtist", "Blood Bank - Spotify Singles");
+        await enricher.LookupTrackAsync("MatchArtist", "Someone Like You (feat. Guest Artist)");
+        await enricher.LookupTrackAsync("MatchArtist", "All I Wanted (stay)");
         await enricher.LookupTrackAsync("MatchArtist", "I Know You Are (But What Am I Thinking)");
 
         Assert.Contains("term=MatchArtist Space Oddity&", seenTerms[0], StringComparison.OrdinalIgnoreCase);
         Assert.Contains("term=MatchArtist Take On Me&", seenTerms[1], StringComparison.OrdinalIgnoreCase);
         Assert.Contains("term=MatchArtist Hotel California&", seenTerms[2], StringComparison.OrdinalIgnoreCase);
         Assert.Contains("term=MatchArtist Blood Bank&", seenTerms[3], StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("term=MatchArtist I Know You Are (But What Am I Thinking)&", seenTerms[4], StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("term=MatchArtist Someone Like You&", seenTerms[4], StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("term=MatchArtist All I Wanted (stay)&", seenTerms[5], StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("term=MatchArtist I Know You Are (But What Am I Thinking)&", seenTerms[6], StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -486,9 +490,77 @@ public class TrackEnricherServiceTests
             .Select(i => new AnalyzedTrack { Artist = $"Artist{i}", Title = $"Track{i}" })
             .ToList();
 
-        await enricher.EnrichTracksAsync(tracks);
+        var reported = new List<(int Completed, int Total)>();
+        var progress = new SyncProgress<(int Completed, int Total)>(p =>
+        {
+            lock (reported)
+            {
+                reported.Add(p);
+            }
+        });
+
+        await enricher.EnrichTracksAsync(tracks, progress);
 
         Assert.Equal(35, tracks.Count(t => t.Genre == "Rock"));
+        Assert.Contains((0, 35), reported);
+        Assert.Contains((35, 35), reported);
+        Assert.Equal(36, reported.Count);
+    }
+
+    [Fact]
+    public async Task LookupTrackAsync_ReleasesThrottleWhenCancelledMidFlight()
+    {
+        int callCount = 0;
+        CancellationTokenSource? activeCts = null;
+
+        var handler = new AsyncStubHandler((req, ct) =>
+        {
+            callCount++;
+            if (callCount <= 2)
+            {
+                activeCts?.Cancel();
+                ct.ThrowIfCancellationRequested();
+            }
+
+            string json = JsonSerializer.Serialize(new
+            {
+                resultCount = 1,
+                results = new[]
+                {
+                    new
+                    {
+                        trackName = "Song",
+                        artistName = "Phoebe Bridgers",
+                        collectionName = "Punisher",
+                        primaryGenreName = "Alternative",
+                        releaseDate = "2020-06-18T00:00:00Z",
+                        artworkUrl100 = "https://is1-ssl.mzstatic.com/image/p/100x100bb.jpg",
+                        previewUrl = "https://audio-ssl.itunes.apple.com/p.m4a"
+                    }
+                }
+            });
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json")
+            });
+        });
+
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var enricher = new TrackEnricherService(new StubFactory(new HttpClient(handler)), cache, NullLogger<TrackEnricherService>.Instance);
+
+        for (int i = 1; i <= 2; i++)
+        {
+            using var cts = new CancellationTokenSource();
+            activeCts = cts;
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => enricher.LookupTrackAsync($"CancelledArtist{i}", $"CancelledTitle{i}", cts.Token));
+        }
+
+        using var verifyCts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        var recovered = await enricher.LookupTrackAsync("Phoebe Bridgers", "Kyoto", verifyCts.Token);
+
+        Assert.NotNull(recovered);
+        Assert.Equal("Alternative", recovered!.Genre);
     }
 
     private sealed class StubFactory(HttpClient client) : IHttpClientFactory
@@ -506,5 +578,10 @@ public class TrackEnricherServiceTests
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
             => responder(request, cancellationToken);
+    }
+
+    private sealed class SyncProgress<T>(Action<T> onReport) : IProgress<T>
+    {
+        public void Report(T value) => onReport(value);
     }
 }

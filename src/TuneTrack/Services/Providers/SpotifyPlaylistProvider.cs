@@ -29,7 +29,13 @@ public class SpotifyPlaylistProvider : IPlaylistProvider
                uri.AbsolutePath.Contains("/playlist/", StringComparison.OrdinalIgnoreCase);
     }
 
-    public async Task<PlaylistFetchResult> GetPlaylistAsync(Uri uri, CancellationToken cancellationToken = default)
+    public Task<PlaylistFetchResult> GetPlaylistAsync(Uri uri, CancellationToken cancellationToken = default)
+        => GetPlaylistAsync(uri, progress: null, cancellationToken);
+
+    public async Task<PlaylistFetchResult> GetPlaylistAsync(
+        Uri uri,
+        IProgress<(int Completed, int Total)>? progress,
+        CancellationToken cancellationToken = default)
     {
         string playlistId = ExtractPlaylistId(uri);
         if (string.IsNullOrEmpty(playlistId))
@@ -44,24 +50,24 @@ public class SpotifyPlaylistProvider : IPlaylistProvider
             using var request = new HttpRequestMessage(HttpMethod.Get, embedUrl);
             request.Headers.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
 
-            using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            cts.CancelAfter(TimeSpan.FromSeconds(10));
+            using var fetchCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            fetchCts.CancelAfter(TimeSpan.FromSeconds(10));
 
-            using var response = await _httpClient.SendAsync(request, cts.Token);
+            using var response = await _httpClient.SendAsync(request, fetchCts.Token);
             if (response.IsSuccessStatusCode)
             {
-                var html = await response.Content.ReadAsStringAsync(cts.Token);
+                var html = await response.Content.ReadAsStringAsync(fetchCts.Token);
                 var result = ParseNextData(html);
                 if (result != null && result.Tracks.Count > 0)
                 {
-                    // Enrich genres, release years, artwork via iTunes API
-                    await _enricher.EnrichTracksAsync(result.Tracks, maxToEnrich: 30, cts.Token);
+                    // Enrich genres, release years, artwork via iTunes API outside the 10s HTML fetch budget
+                    await _enricher.EnrichTracksAsync(result.Tracks, progress, maxToEnrich: 100, cancellationToken);
                     return result;
                 }
             }
 
             // 2. Fallback to public oEmbed if embed page data was blocked/empty
-            return await FetchOembedFallbackAsync(uri, cts.Token);
+            return await FetchOembedFallbackAsync(uri, fetchCts.Token);
         }
         catch (OperationCanceledException)
         {

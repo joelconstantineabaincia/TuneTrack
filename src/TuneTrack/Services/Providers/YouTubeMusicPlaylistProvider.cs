@@ -30,7 +30,13 @@ public class YouTubeMusicPlaylistProvider : IPlaylistProvider
                (uri.Query.Contains("list=", StringComparison.OrdinalIgnoreCase) || uri.AbsolutePath.Contains("/playlist", StringComparison.OrdinalIgnoreCase));
     }
 
-    public async Task<PlaylistFetchResult> GetPlaylistAsync(Uri uri, CancellationToken cancellationToken = default)
+    public Task<PlaylistFetchResult> GetPlaylistAsync(Uri uri, CancellationToken cancellationToken = default)
+        => GetPlaylistAsync(uri, progress: null, cancellationToken);
+
+    public async Task<PlaylistFetchResult> GetPlaylistAsync(
+        Uri uri,
+        IProgress<(int Completed, int Total)>? progress,
+        CancellationToken cancellationToken = default)
     {
         try
         {
@@ -64,7 +70,7 @@ public class YouTubeMusicPlaylistProvider : IPlaylistProvider
 
             if (tracks.Count > 0)
             {
-                await _enricher.EnrichTracksAsync(tracks, maxToEnrich: 30, cts.Token);
+                await _enricher.EnrichTracksAsync(tracks, progress, maxToEnrich: 100, cancellationToken);
                 return PlaylistFetchResult.Ok(PlatformName, title, coverUrl, tracks);
             }
 

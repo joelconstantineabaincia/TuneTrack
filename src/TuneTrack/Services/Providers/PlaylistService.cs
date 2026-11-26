@@ -18,8 +18,12 @@ public record AnalysisDashboardData(
 public interface IPlaylistService
 {
     Task<AnalysisDashboardData> AnalyzeUrlAsync(string url, string clientId, CancellationToken cancellationToken = default);
+    Task<AnalysisDashboardData> AnalyzeUrlAsync(string url, string clientId, IProgress<(int Completed, int Total)>? progress, CancellationToken cancellationToken = default)
+        => AnalyzeUrlAsync(url, clientId, cancellationToken);
     Task<AnalysisDashboardData> AnalyzeSampleAsync(string sampleId, string clientId, CancellationToken cancellationToken = default);
     Task<AnalysisDashboardData> AnalyzeManualTrackListAsync(string title, string platform, string? coverUrl, string rawTrackList, string clientId, CancellationToken cancellationToken = default);
+    Task<AnalysisDashboardData> AnalyzeManualTrackListAsync(string title, string platform, string? coverUrl, string rawTrackList, string clientId, IProgress<(int Completed, int Total)>? progress, CancellationToken cancellationToken = default)
+        => AnalyzeManualTrackListAsync(title, platform, coverUrl, rawTrackList, clientId, cancellationToken);
     Task<List<AnalyzedPlaylist>> GetHistoryAsync(string clientId, CancellationToken cancellationToken = default);
     Task<AnalyzedPlaylist?> GetPlaylistByIdAsync(int id, string clientId, CancellationToken cancellationToken = default);
     Task<bool> DeleteHistoryItemAsync(int id, string clientId, CancellationToken cancellationToken = default);
@@ -57,7 +61,14 @@ public class PlaylistService : IPlaylistService
         _logger = logger;
     }
 
-    public async Task<AnalysisDashboardData> AnalyzeUrlAsync(string url, string clientId, CancellationToken cancellationToken = default)
+    public Task<AnalysisDashboardData> AnalyzeUrlAsync(string url, string clientId, CancellationToken cancellationToken = default)
+        => AnalyzeUrlAsync(url, clientId, progress: null, cancellationToken);
+
+    public async Task<AnalysisDashboardData> AnalyzeUrlAsync(
+        string url,
+        string clientId,
+        IProgress<(int Completed, int Total)>? progress,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(url) || !Uri.TryCreate(url.Trim(), UriKind.Absolute, out var uri))
         {
@@ -70,7 +81,7 @@ public class PlaylistService : IPlaylistService
             throw new NotSupportedException($"No provider found for URL '{uri.Host}'. Please use Spotify, Apple Music, or YouTube Music.");
         }
 
-        var fetchResult = await provider.GetPlaylistAsync(uri, cancellationToken);
+        var fetchResult = await provider.GetPlaylistAsync(uri, progress, cancellationToken);
         if (!fetchResult.Success && !fetchResult.IsPartialResult)
         {
             throw new InvalidOperationException(fetchResult.ErrorMessage ?? "Failed to fetch playlist data.");
@@ -120,12 +131,22 @@ public class PlaylistService : IPlaylistService
         );
     }
 
+    public Task<AnalysisDashboardData> AnalyzeManualTrackListAsync(
+        string title,
+        string platform,
+        string? coverUrl,
+        string rawTrackList,
+        string clientId,
+        CancellationToken cancellationToken = default)
+        => AnalyzeManualTrackListAsync(title, platform, coverUrl, rawTrackList, clientId, progress: null, cancellationToken);
+
     public async Task<AnalysisDashboardData> AnalyzeManualTrackListAsync(
         string title,
         string platform,
         string? coverUrl,
         string rawTrackList,
         string clientId,
+        IProgress<(int Completed, int Total)>? progress,
         CancellationToken cancellationToken = default)
     {
         var tracks = FallbackTrackListParser.ParseTrackList(rawTrackList);
@@ -135,7 +156,7 @@ public class PlaylistService : IPlaylistService
         }
 
         // Enrich the pasted tracks
-        await _enricher.EnrichTracksAsync(tracks, maxToEnrich: 30, cancellationToken);
+        await _enricher.EnrichTracksAsync(tracks, progress, maxToEnrich: 100, cancellationToken);
 
         return await ProcessAndPersistAsync(
             sourceUrl: "manual://pasted-tracklist",

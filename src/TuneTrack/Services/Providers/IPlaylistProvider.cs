@@ -27,4 +27,6 @@ public interface IPlaylistProvider
     string PlatformName { get; }
     bool CanHandle(Uri uri);
     Task<PlaylistFetchResult> GetPlaylistAsync(Uri uri, CancellationToken cancellationToken = default);
+    Task<PlaylistFetchResult> GetPlaylistAsync(Uri uri, IProgress<(int Completed, int Total)>? progress, CancellationToken cancellationToken = default) =>
+        GetPlaylistAsync(uri, cancellationToken);
 }

@@ -159,6 +159,338 @@ public class TrackEnricherServiceTests
         Assert.All(tracks, t => Assert.Equal("Hip-Hop/Rap", t.Genre));
     }
 
+    private static string ExtractTerm(string query)
+    {
+        var trimmed = query.TrimStart('?');
+        foreach (var part in trimmed.Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (part.StartsWith("term=", StringComparison.OrdinalIgnoreCase))
+            {
+                return Uri.UnescapeDataString(part[5..]).Replace('+', ' ');
+            }
+        }
+        return string.Empty;
+    }
+
+    [Fact]
+    public async Task LookupTrackAsync_RetriesWithBackoffOnHttp429AndSucceeds()
+    {
+        int attempts = 0;
+        var handler = new StubHandler(_ =>
+        {
+            attempts++;
+            if (attempts <= 2)
+            {
+                return new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+            }
+
+            string json = JsonSerializer.Serialize(new
+            {
+                resultCount = 1,
+                results = new[]
+                {
+                    new
+                    {
+                        trackName = "Anything",
+                        artistName = "Phoebe Bridgers",
+                        collectionName = "Stranger in the Alps",
+                        primaryGenreName = "Alternative",
+                        releaseDate = "2017-09-22T00:00:00Z",
+                        artworkUrl100 = "https://is1-ssl.mzstatic.com/image/pb/100x100bb.jpg",
+                        previewUrl = "https://audio-ssl.itunes.apple.com/pb.m4a"
+                    }
+                }
+            });
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json")
+            };
+        });
+
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var enricher = new TrackEnricherService(new StubFactory(new HttpClient(handler)), cache, NullLogger<TrackEnricherService>.Instance);
+
+        var result = await enricher.LookupTrackAsync("Phoebe Bridgers", "Anything");
+
+        Assert.Equal(3, attempts);
+        Assert.NotNull(result);
+        Assert.Equal("Alternative", result!.Genre);
+    }
+
+    [Fact]
+    public async Task LookupTrackAsync_RetriesOnTimeoutAndDoesNotCacheTransientFailure()
+    {
+        int timeoutTrackCalls = 0;
+        int exhaustedCalls = 0;
+        var handler = new AsyncStubHandler(async (req, _) =>
+        {
+            string query = req.RequestUri?.Query ?? string.Empty;
+            if (query.Contains("TimeoutTrack", StringComparison.OrdinalIgnoreCase))
+            {
+                timeoutTrackCalls++;
+                if (timeoutTrackCalls == 1)
+                {
+                    await Task.CompletedTask;
+                    throw new TaskCanceledException("Simulated HTTP timeout");
+                }
+
+                string okJson = JsonSerializer.Serialize(new
+                {
+                    resultCount = 1,
+                    results = new[]
+                    {
+                        new
+                        {
+                            trackName = "TimeoutTrack",
+                            artistName = "Slowdive",
+                            collectionName = "Souvlaki",
+                            primaryGenreName = "Alternative",
+                            releaseDate = "1993-05-11T00:00:00Z",
+                            artworkUrl100 = "https://is1-ssl.mzstatic.com/image/sd/100x100bb.jpg",
+                            previewUrl = "https://audio-ssl.itunes.apple.com/sd.m4a"
+                        }
+                    }
+                });
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(okJson, Encoding.UTF8, "application/json")
+                };
+            }
+
+            exhaustedCalls++;
+            if (exhaustedCalls <= 3)
+            {
+                return new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+            }
+
+            string recoveredJson = JsonSerializer.Serialize(new
+            {
+                resultCount = 1,
+                results = new[]
+                {
+                    new
+                    {
+                        trackName = "RecoveredSong",
+                        artistName = "Alvvays",
+                        collectionName = "Blue Rev",
+                        primaryGenreName = "Alternative",
+                        releaseDate = "2022-10-07T00:00:00Z",
+                        artworkUrl100 = "https://is1-ssl.mzstatic.com/image/al/100x100bb.jpg",
+                        previewUrl = "https://audio-ssl.itunes.apple.com/al.m4a"
+                    }
+                }
+            });
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(recoveredJson, Encoding.UTF8, "application/json")
+            };
+        });
+
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var enricher = new TrackEnricherService(new StubFactory(new HttpClient(handler)), cache, NullLogger<TrackEnricherService>.Instance);
+
+        var timedOutThenOk = await enricher.LookupTrackAsync("Slowdive", "TimeoutTrack");
+        Assert.NotNull(timedOutThenOk);
+        Assert.Equal(2, timeoutTrackCalls);
+
+        // First call exhausts retries on 429 -> returns null without poisoning cache
+        var firstAttempt = await enricher.LookupTrackAsync("Alvvays", "RecoveredSong");
+        Assert.Null(firstAttempt);
+
+        // Next call should hit HTTP again (not negative cache) and recover
+        var secondAttempt = await enricher.LookupTrackAsync("Alvvays", "RecoveredSong");
+        Assert.NotNull(secondAttempt);
+        Assert.Equal("Alternative", secondAttempt!.Genre);
+    }
+
+    [Fact]
+    public async Task LookupTrackAsync_FallsBackToFirstListedArtistThenTitleOnlyWithArtistMatch()
+    {
+        var seenTerms = new List<string>();
+        var handler = new StubHandler(req =>
+        {
+            string decodedQuery = Uri.UnescapeDataString(req.RequestUri?.Query ?? string.Empty);
+            seenTerms.Add(decodedQuery);
+
+            if (decodedQuery.Contains("term=The Avalanches ", StringComparison.OrdinalIgnoreCase) &&
+                !decodedQuery.Contains("Loaded Honey", StringComparison.OrdinalIgnoreCase))
+            {
+                string json = JsonSerializer.Serialize(new
+                {
+                    resultCount = 1,
+                    results = new[]
+                    {
+                        new
+                        {
+                            trackName = "I Give Everything I Have 2 U",
+                            artistName = "The Avalanches",
+                            collectionName = "Single",
+                            primaryGenreName = "Electronic",
+                            releaseDate = "2024-01-01T00:00:00Z",
+                            artworkUrl100 = "https://is1-ssl.mzstatic.com/image/av/100x100bb.jpg",
+                            previewUrl = "https://audio-ssl.itunes.apple.com/av.m4a"
+                        }
+                    }
+                });
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
+            }
+
+            if (decodedQuery.Contains("term=1901&", StringComparison.OrdinalIgnoreCase))
+            {
+                string json = JsonSerializer.Serialize(new
+                {
+                    resultCount = 2,
+                    results = new[]
+                    {
+                        new
+                        {
+                            trackName = "1901",
+                            artistName = "Tribute Band",
+                            collectionName = "Covers",
+                            primaryGenreName = "Pop",
+                            releaseDate = "2015-01-01T00:00:00Z",
+                            artworkUrl100 = "https://is1-ssl.mzstatic.com/image/x/100x100bb.jpg",
+                            previewUrl = "https://audio-ssl.itunes.apple.com/x.m4a"
+                        },
+                        new
+                        {
+                            trackName = "1901",
+                            artistName = "Phoenix",
+                            collectionName = "Wolfgang Amadeus Phoenix",
+                            primaryGenreName = "Alternative",
+                            releaseDate = "2009-05-25T00:00:00Z",
+                            artworkUrl100 = "https://is1-ssl.mzstatic.com/image/ph/100x100bb.jpg",
+                            previewUrl = "https://audio-ssl.itunes.apple.com/ph.m4a"
+                        }
+                    }
+                });
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
+            }
+
+            if (decodedQuery.Contains("term=Missing Only Song&", StringComparison.OrdinalIgnoreCase))
+            {
+                string json = JsonSerializer.Serialize(new
+                {
+                    resultCount = 1,
+                    results = new[]
+                    {
+                        new
+                        {
+                            trackName = "Missing Only Song",
+                            artistName = "Completely Different Artist",
+                            collectionName = "Other",
+                            primaryGenreName = "Rock",
+                            releaseDate = "2020-01-01T00:00:00Z",
+                            artworkUrl100 = "https://is1-ssl.mzstatic.com/image/o/100x100bb.jpg",
+                            previewUrl = "https://audio-ssl.itunes.apple.com/o.m4a"
+                        }
+                    }
+                });
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
+            }
+
+            string empty = JsonSerializer.Serialize(new { resultCount = 0, results = Array.Empty<object>() });
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(empty, Encoding.UTF8, "application/json") };
+        });
+
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var enricher = new TrackEnricherService(new StubFactory(new HttpClient(handler)), cache, NullLogger<TrackEnricherService>.Instance);
+
+        var collabResult = await enricher.LookupTrackAsync("The Avalanches, Loaded Honey", "I Give Everything I Have 2 U");
+        Assert.NotNull(collabResult);
+        Assert.Equal("Electronic", collabResult!.Genre);
+
+        var titleOnlyResult = await enricher.LookupTrackAsync("Phoenix", "1901");
+        Assert.NotNull(titleOnlyResult);
+        Assert.Equal("Alternative", titleOnlyResult!.Genre);
+
+        var rejectedTitleOnly = await enricher.LookupTrackAsync("Expected Indie Artist", "Missing Only Song");
+        Assert.Null(rejectedTitleOnly);
+    }
+
+    [Fact]
+    public async Task LookupTrackAsync_CleansEditionVersionAndFeatureSuffixesWithoutDroppingRealParens()
+    {
+        var seenTerms = new List<string>();
+        var handler = new StubHandler(req =>
+        {
+            seenTerms.Add(Uri.UnescapeDataString(req.RequestUri?.Query ?? string.Empty));
+            string okJson = JsonSerializer.Serialize(new
+            {
+                resultCount = 1,
+                results = new[]
+                {
+                    new
+                    {
+                        trackName = "Track",
+                        artistName = "MatchArtist",
+                        collectionName = "Album",
+                        primaryGenreName = "Rock",
+                        releaseDate = "2011-01-01T00:00:00Z",
+                        artworkUrl100 = "https://is1-ssl.mzstatic.com/image/t/100x100bb.jpg",
+                        previewUrl = "https://audio-ssl.itunes.apple.com/t.m4a"
+                    }
+                }
+            });
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(okJson, Encoding.UTF8, "application/json") };
+        });
+
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var enricher = new TrackEnricherService(new StubFactory(new HttpClient(handler)), cache, NullLogger<TrackEnricherService>.Instance);
+
+        await enricher.LookupTrackAsync("MatchArtist", "Space Oddity - Remastered 2011");
+        await enricher.LookupTrackAsync("MatchArtist", "Take On Me - Single Version");
+        await enricher.LookupTrackAsync("MatchArtist", "Hotel California (Live)");
+        await enricher.LookupTrackAsync("MatchArtist", "Blood Bank - Spotify Singles");
+        await enricher.LookupTrackAsync("MatchArtist", "I Know You Are (But What Am I Thinking)");
+
+        Assert.Contains("term=MatchArtist Space Oddity&", seenTerms[0], StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("term=MatchArtist Take On Me&", seenTerms[1], StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("term=MatchArtist Hotel California&", seenTerms[2], StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("term=MatchArtist Blood Bank&", seenTerms[3], StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("term=MatchArtist I Know You Are (But What Am I Thinking)&", seenTerms[4], StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task EnrichTracksAsync_ProcessesMoreThan30TracksByDefault()
+    {
+        var handler = new StubHandler(req =>
+        {
+            string decodedQuery = Uri.UnescapeDataString(req.RequestUri?.Query ?? string.Empty);
+            string term = ExtractTerm(decodedQuery);
+            string artist = term.Split(' ')[0];
+            string json = JsonSerializer.Serialize(new
+            {
+                resultCount = 1,
+                results = new[]
+                {
+                    new
+                    {
+                        trackName = "Song",
+                        artistName = artist,
+                        collectionName = "Album",
+                        primaryGenreName = "Rock",
+                        releaseDate = "2022-01-01T00:00:00Z",
+                        artworkUrl100 = "https://is1-ssl.mzstatic.com/image/r/100x100bb.jpg",
+                        previewUrl = "https://audio-ssl.itunes.apple.com/r.m4a"
+                    }
+                }
+            });
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
+        });
+
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var enricher = new TrackEnricherService(new StubFactory(new HttpClient(handler)), cache, NullLogger<TrackEnricherService>.Instance);
+
+        var tracks = Enumerable.Range(1, 35)
+            .Select(i => new AnalyzedTrack { Artist = $"Artist{i}", Title = $"Track{i}" })
+            .ToList();
+
+        await enricher.EnrichTracksAsync(tracks);
+
+        Assert.Equal(35, tracks.Count(t => t.Genre == "Rock"));
+    }
+
     private sealed class StubFactory(HttpClient client) : IHttpClientFactory
     {
         public HttpClient CreateClient(string name) => client;
@@ -168,5 +500,11 @@ public class TrackEnricherServiceTests
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
             => Task.FromResult(responder(request));
+    }
+
+    private sealed class AsyncStubHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> responder) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            => responder(request, cancellationToken);
     }
 }

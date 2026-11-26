@@ -1,5 +1,6 @@
 @page "/"
 @rendermode InteractiveServer
+@implements IDisposable
 @using System.Globalization
 @inject IPlaylistService PlaylistService
 @inject ISamplePlaylistService SampleService
@@ -105,7 +106,22 @@
     <!-- Loading Skeleton State -->
     @if (isLoading)
     {
-        <div class="space-y-8 animate-pulse">
+        <div class="space-y-8">
+            @if (showMatchingProgress && matchingTotal > 0)
+            {
+                <div role="status" aria-live="polite" class="flex items-center justify-between gap-4 py-2.5 border-b border-white/10 text-xs sm:text-sm text-zinc-300">
+                    <span class="inline-flex items-center gap-2 font-medium">
+                        <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" aria-hidden="true"></span>
+                        <span>Matching tracks… <span class="font-mono tabular-nums text-white">@matchingCompleted/@matchingTotal</span></span>
+                    </span>
+                    <div class="w-32 sm:w-48 h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                        <div class="h-full bg-emerald-400 rounded-full transition-all duration-300"
+                             style="width: @((int)Math.Round((double)matchingCompleted / matchingTotal * 100))%"></div>
+                    </div>
+                </div>
+            }
+
+            <div class="space-y-8 animate-pulse">
             <!-- Header skeleton -->
             <div class="flex flex-col sm:flex-row items-start sm:items-center gap-6 sm:gap-8 pt-1 pb-8 border-b border-white/10">
                 <div class="w-36 h-36 sm:w-40 sm:h-40 bg-zinc-900 rounded-lg flex-shrink-0"></div>
@@ -131,6 +147,7 @@
                     <div class="h-44 border-b border-white/10"></div>
                     <div class="h-56 border-b border-white/10"></div>
                 </div>
+            </div>
             </div>
         </div>
     }
@@ -676,6 +693,13 @@
     private bool showPasteFallback;
     private string pastedTrackList = "";
 
+    // Loading progress indicator for longer enrichment runs
+    private CancellationTokenSource? _analysisCts;
+    private bool showMatchingProgress;
+    private int matchingCompleted;
+    private int matchingTotal;
+    private DateTime loadingStartedUtc;
+
     private string DetectedPlatform
     {
         get
@@ -725,47 +749,48 @@
     {
         if (string.IsNullOrWhiteSpace(inputUrl)) return;
 
-        isLoading = true;
-        errorMessage = null;
+        var cts = BeginLoadingProgress();
         showPasteFallback = false;
         pastedTrackList = "";
-        selectedGenreFilter = null;
-        trackSearchQuery = "";
         dashboard = null;
 
         try
         {
-            dashboard = await PlaylistService.AnalyzeUrlAsync(inputUrl.Trim(), clientId);
+            var progress = CreateMatchProgress(cts.Token);
+            dashboard = await PlaylistService.AnalyzeUrlAsync(inputUrl.Trim(), clientId, progress, cts.Token);
             if (dashboard.IsPartialResult || dashboard.Playlist.Tracks.Count == 0)
             {
                 showPasteFallback = true;
             }
             await RefreshLocalDisplayDate();
         }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        {
+        }
         catch (Exception ex)
         {
             errorMessage = ex.Message;
         }
         finally
         {
-            isLoading = false;
+            EndLoadingProgress(cts);
         }
     }
 
     private async Task LoadSample(string sampleId)
     {
-        isLoading = true;
-        errorMessage = null;
+        var cts = BeginLoadingProgress();
         showPasteFallback = false;
         pastedTrackList = "";
-        selectedGenreFilter = null;
-        trackSearchQuery = "";
         dashboard = null;
 
         try
         {
-            dashboard = await PlaylistService.AnalyzeSampleAsync(sampleId, clientId);
+            dashboard = await PlaylistService.AnalyzeSampleAsync(sampleId, clientId, cts.Token);
             await RefreshLocalDisplayDate();
+        }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        {
         }
         catch (Exception ex)
         {
@@ -773,7 +798,7 @@
         }
         finally
         {
-            isLoading = false;
+            EndLoadingProgress(cts);
         }
     }
 
@@ -781,23 +806,26 @@
     {
         if (string.IsNullOrWhiteSpace(pastedTrackList) || dashboard == null) return;
 
-        isLoading = true;
-        errorMessage = null;
-        selectedGenreFilter = null;
-        trackSearchQuery = "";
+        var cts = BeginLoadingProgress();
 
         try
         {
+            var progress = CreateMatchProgress(cts.Token);
             dashboard = await PlaylistService.AnalyzeManualTrackListAsync(
                 title: dashboard.Playlist.Title,
                 platform: dashboard.Playlist.Platform,
                 coverUrl: dashboard.Playlist.CoverUrl,
                 rawTrackList: pastedTrackList,
-                clientId: clientId
+                clientId: clientId,
+                progress: progress,
+                cancellationToken: cts.Token
             );
             showPasteFallback = false;
             pastedTrackList = "";
             await RefreshLocalDisplayDate();
+        }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        {
         }
         catch (Exception ex)
         {
@@ -805,8 +833,82 @@
         }
         finally
         {
-            isLoading = false;
+            EndLoadingProgress(cts);
         }
+    }
+
+    private CancellationTokenSource BeginLoadingProgress()
+    {
+        _analysisCts?.Cancel();
+        _analysisCts?.Dispose();
+        var cts = new CancellationTokenSource();
+        _analysisCts = cts;
+
+        isLoading = true;
+        errorMessage = null;
+        selectedGenreFilter = null;
+        trackSearchQuery = "";
+        showMatchingProgress = false;
+        matchingCompleted = 0;
+        matchingTotal = 0;
+        loadingStartedUtc = DateTime.UtcNow;
+
+        _ = RevealProgressAfterDelayAsync(cts.Token);
+        return cts;
+    }
+
+    private void EndLoadingProgress(CancellationTokenSource cts)
+    {
+        if (ReferenceEquals(_analysisCts, cts))
+        {
+            _analysisCts.Cancel();
+            isLoading = false;
+            showMatchingProgress = false;
+        }
+    }
+
+    private async Task RevealProgressAfterDelayAsync(CancellationToken token)
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(2), token);
+            if (!token.IsCancellationRequested && isLoading)
+            {
+                showMatchingProgress = true;
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (ObjectDisposedException) { }
+    }
+
+    private IProgress<(int Completed, int Total)> CreateMatchProgress(CancellationToken token) =>
+        new InlineProgress<(int Completed, int Total)>(p =>
+        {
+            if (token.IsCancellationRequested) return;
+            _ = InvokeAsync(() =>
+            {
+                if (token.IsCancellationRequested) return;
+                matchingCompleted = p.Completed;
+                matchingTotal = p.Total;
+                if ((DateTime.UtcNow - loadingStartedUtc).TotalSeconds >= 2)
+                {
+                    showMatchingProgress = true;
+                }
+                StateHasChanged();
+            });
+        });
+
+    public void Dispose()
+    {
+        _analysisCts?.Cancel();
+        _analysisCts?.Dispose();
+        _analysisCts = null;
+    }
+
+    private sealed class InlineProgress<T>(Action<T> handler) : IProgress<T>
+    {
+        public void Report(T value) => handler(value);
     }
 
     private async Task LoadPlaylistFromHistory(int playlistId)

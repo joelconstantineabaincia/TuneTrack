@@ -46,6 +46,30 @@ public class PlaylistAndProviderTests
     }
 
     [Fact]
+    public async Task SpotifyProvider_EnrichesMoreThan30Tracks()
+    {
+        var trackJson = string.Join(",", Enumerable.Range(1, 35)
+            .Select(i => $"{{\"title\":\"Song {i}\",\"subtitle\":\"Artist {i}\",\"duration\":180000}}"));
+        string nextData = $"{{\"props\":{{\"pageProps\":{{\"state\":{{\"data\":{{\"entity\":{{\"name\":\"Big Playlist\",\"coverArt\":{{\"sources\":[{{\"url\":\"https://i.scdn.co/image/big\"}}]}},\"trackList\":[{trackJson}]}}}}}}}}}}}}";
+        string html = $"<html><body><script id=\"__NEXT_DATA__\" type=\"application/json\">{nextData}</script></body></html>";
+
+        var handler = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(html, Encoding.UTF8, "text/html")
+        });
+        var enricher = new CountingEnricher();
+        var provider = new SpotifyPlaylistProvider(
+            new StubFactory(new HttpClient(handler)),
+            enricher,
+            NullLogger<SpotifyPlaylistProvider>.Instance);
+
+        var result = await provider.GetPlaylistAsync(new Uri("https://open.spotify.com/playlist/big51"));
+
+        Assert.Equal(35, result.Tracks.Count);
+        Assert.Equal(35, enricher.RequestedMaxToEnrich >= 35 ? 35 : enricher.EnrichedCount);
+    }
+
+    [Fact]
     public async Task YouTubeMusicProvider_FetchesWwwPlaylistWithConsentCookiesAndParsesYtInitialData()
     {
         HttpRequestMessage? captured = null;
@@ -163,6 +187,26 @@ public class PlaylistAndProviderTests
 
         public Task EnrichTracksAsync(IList<AnalyzedTrack> tracks, int maxToEnrich = 25, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
+    }
+
+    private sealed class CountingEnricher : ITrackEnricherService
+    {
+        public int RequestedMaxToEnrich { get; private set; }
+        public int EnrichedCount { get; private set; }
+
+        public Task<TrackEnrichmentResult?> LookupTrackAsync(string artist, string title, CancellationToken cancellationToken = default) =>
+            Task.FromResult<TrackEnrichmentResult?>(null);
+
+        public Task EnrichTracksAsync(IList<AnalyzedTrack> tracks, int maxToEnrich = 25, CancellationToken cancellationToken = default)
+        {
+            RequestedMaxToEnrich = maxToEnrich;
+            EnrichedCount = Math.Min(tracks.Count, maxToEnrich);
+            foreach (var track in tracks.Take(maxToEnrich))
+            {
+                track.Genre = "Indie";
+            }
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class EmptyRecommender : IRecommendationEngine

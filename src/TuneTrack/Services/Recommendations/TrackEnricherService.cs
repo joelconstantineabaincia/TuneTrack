@@ -31,12 +31,14 @@ public class TrackEnricherService : ITrackEnricherService
 {
     private const int MaxSearchAttempts = 3;
     private static readonly TimeSpan[] RetryDelays = [TimeSpan.FromMilliseconds(750), TimeSpan.FromMilliseconds(1500)];
-    private static readonly TimeSpan PoliteThrottleDelay = TimeSpan.FromMilliseconds(150);
+    private static readonly TimeSpan PoliteThrottleDelay = TimeSpan.FromMilliseconds(550);
+    private static readonly TimeSpan ElevatedThrottleDelay = TimeSpan.FromMilliseconds(1100);
 
     private readonly HttpClient _httpClient;
     private readonly IMemoryCache _cache;
     private readonly ILogger<TrackEnricherService> _logger;
-    private readonly SemaphoreSlim _throttle = new(2, 2);
+    private readonly SemaphoreSlim _throttle = new(1, 1);
+    private DateTimeOffset _elevatedThrottleUntil = DateTimeOffset.MinValue;
 
     private enum MatchFailureReason
     {
@@ -101,36 +103,48 @@ public class TrackEnricherService : ITrackEnricherService
             passes.Add((cleanTitle, 10));
         }
 
+        string phArtist = !string.IsNullOrWhiteSpace(firstArtist) ? firstArtist : artist.Trim();
+        string phQuery = string.IsNullOrWhiteSpace(phArtist) ? cleanTitle : $"{phArtist} {cleanTitle}";
+
         bool sawAnyCandidates = false;
         MatchFailureReason lastFailure = MatchFailureReason.ZeroResults;
         string? lastDetail = null;
 
-        foreach (var (term, limit) in passes)
+        (string? Country, IReadOnlyList<(string Term, int Limit)> Passes)[] storefronts =
+        [
+            (null, passes),
+            ("PH", [(phQuery, 10)])
+        ];
+
+        foreach (var (country, storefrontPasses) in storefronts)
         {
-            var attempt = await SearchWithRetryAsync(artist, term, limit, cancellationToken);
-            if (attempt.Match != null)
+            foreach (var (term, limit) in storefrontPasses)
             {
-                _cache.Set(cacheKey, attempt.Match, TimeSpan.FromHours(24));
-                return new LookupOutcome(attempt.Match, MatchFailureReason.None);
-            }
+                var attempt = await SearchWithRetryAsync(artist, term, limit, country, cancellationToken);
+                if (attempt.Match != null)
+                {
+                    _cache.Set(cacheKey, attempt.Match, TimeSpan.FromHours(24));
+                    return new LookupOutcome(attempt.Match, MatchFailureReason.None);
+                }
 
-            if (attempt.FailureReason is MatchFailureReason.TransientRateLimit or MatchFailureReason.TransientTimeout)
-            {
-                // Transient errors must not poison the negative cache or fire redundant fallback passes
-                return new LookupOutcome(null, attempt.FailureReason, attempt.Detail);
-            }
+                if (attempt.FailureReason is MatchFailureReason.TransientRateLimit or MatchFailureReason.TransientTimeout)
+                {
+                    // Transient errors must not poison the negative cache or fire redundant fallback passes
+                    return new LookupOutcome(null, attempt.FailureReason, attempt.Detail);
+                }
 
-            if (attempt.FailureReason == MatchFailureReason.HttpError)
-            {
-                lastFailure = MatchFailureReason.HttpError;
-                lastDetail = attempt.Detail;
-                continue;
-            }
+                if (attempt.FailureReason == MatchFailureReason.HttpError)
+                {
+                    lastFailure = MatchFailureReason.HttpError;
+                    lastDetail = attempt.Detail;
+                    continue;
+                }
 
-            if (attempt.SawCandidates)
-            {
-                sawAnyCandidates = true;
-                lastDetail = attempt.Detail;
+                if (attempt.SawCandidates)
+                {
+                    sawAnyCandidates = true;
+                    lastDetail = attempt.Detail;
+                }
             }
         }
 
@@ -150,10 +164,12 @@ public class TrackEnricherService : ITrackEnricherService
         string expectedArtist,
         string term,
         int limit,
+        string? country,
         CancellationToken cancellationToken)
     {
         string escapedTerm = Uri.EscapeDataString(term);
-        string url = $"https://itunes.apple.com/search?term={escapedTerm}&entity=song&limit={limit}";
+        string countryParam = string.IsNullOrWhiteSpace(country) ? string.Empty : $"&country={Uri.EscapeDataString(country)}";
+        string url = $"https://itunes.apple.com/search?term={escapedTerm}&entity=song&limit={limit}{countryParam}";
 
         await _throttle.WaitAsync(cancellationToken);
         try
@@ -169,9 +185,16 @@ public class TrackEnricherService : ITrackEnricherService
                     cts.CancelAfter(TimeSpan.FromSeconds(6));
 
                     using var response = await _httpClient.SendAsync(request, cts.Token);
-                    if (response.StatusCode == HttpStatusCode.TooManyRequests || (int)response.StatusCode >= 500)
+                    if (response.StatusCode == HttpStatusCode.TooManyRequests ||
+                        response.StatusCode == HttpStatusCode.Forbidden ||
+                        (int)response.StatusCode >= 500)
                     {
-                        bool isRateLimit = response.StatusCode == HttpStatusCode.TooManyRequests;
+                        bool isRateLimit = response.StatusCode is HttpStatusCode.TooManyRequests or HttpStatusCode.Forbidden;
+                        if (isRateLimit)
+                        {
+                            // Slow down subsequent calls briefly so we stop draining Apple's token bucket
+                            _elevatedThrottleUntil = DateTimeOffset.UtcNow.AddSeconds(45);
+                        }
                         if (attempt < MaxSearchAttempts - 1)
                         {
                             var delay = GetRetryDelay(response, attempt);
@@ -269,8 +292,9 @@ public class TrackEnricherService : ITrackEnricherService
         {
             try
             {
-                // Polite delay between iTunes queries to respect ~20 req/min rate limit
-                await Task.Delay(PoliteThrottleDelay, cancellationToken).ConfigureAwait(false);
+                // Respect iTunes rate limits, stepping up spacing briefly after a 429/403
+                var delay = DateTimeOffset.UtcNow < _elevatedThrottleUntil ? ElevatedThrottleDelay : PoliteThrottleDelay;
+                await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -437,11 +461,31 @@ public class TrackEnricherService : ITrackEnricherService
             return true;
         }
 
-        string primaryExpected = ExtractPrimaryArtist(expected);
-        string primaryCandidate = ExtractPrimaryArtist(candidate);
-        return primaryExpected.Length >= 2 && primaryCandidate.Length >= 2 &&
-               (primaryExpected.Contains(primaryCandidate, StringComparison.Ordinal) ||
-                primaryCandidate.Contains(primaryExpected, StringComparison.Ordinal));
+        var expectedList = SplitListedArtists(expected);
+        var candidateList = SplitListedArtists(candidate);
+
+        string primaryExpected = expectedList.FirstOrDefault() ?? expected;
+        string primaryCandidate = candidateList.FirstOrDefault() ?? candidate;
+        if (primaryExpected.Length >= 2 && primaryCandidate.Length >= 2 &&
+            (primaryExpected.Contains(primaryCandidate, StringComparison.Ordinal) ||
+             primaryCandidate.Contains(primaryExpected, StringComparison.Ordinal)))
+        {
+            return true;
+        }
+
+        // Handle multi-artist collaborations where Spotify and iTunes list co-primary artists in different order
+        if (expectedList.Length >= 2 && candidateList.Length >= 2)
+        {
+            int sharedArtists = expectedList.Count(e =>
+                candidateList.Any(c => e == c || (Math.Min(e.Length, c.Length) >= 4 &&
+                    (e.Contains(c, StringComparison.Ordinal) || c.Contains(e, StringComparison.Ordinal)))));
+            if (sharedArtists >= 2)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static string NormalizeArtistForMatch(string? artist)
@@ -457,18 +501,17 @@ public class TrackEnricherService : ITrackEnricherService
             cleaned = cleaned[..featIdx];
         }
 
+        // Treat hyphens/dashes equivalently to spaces so "Flow-G" matches "Flow G"
+        cleaned = System.Text.RegularExpressions.Regex.Replace(cleaned, @"[-–—]+", " ");
         return System.Text.RegularExpressions.Regex.Replace(cleaned, @"\s+", " ").Trim();
     }
 
-    private static string ExtractPrimaryArtist(string normalizedArtist)
-    {
-        int sepIdx = System.Text.RegularExpressions.Regex.Match(normalizedArtist, @"\s*(?:&|,|\band\b|\bwith\b|\bx\b)\s*").Index;
-        if (sepIdx > 0 && System.Text.RegularExpressions.Regex.IsMatch(normalizedArtist, @"\s*(?:&|,|\band\b|\bwith\b|\bx\b)\s*"))
-        {
-            return normalizedArtist[..sepIdx].Trim();
-        }
-        return normalizedArtist;
-    }
+    private static string[] SplitListedArtists(string normalizedArtist) =>
+        System.Text.RegularExpressions.Regex.Split(normalizedArtist, @"\s*(?:,|&|/|\band\b|\bwith\b|\bx\b)\s*")
+            .Select(a => a.Trim())
+            .Where(a => a.Length >= 2)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
 
     private static string ExtractFirstListedArtist(string? artist)
     {

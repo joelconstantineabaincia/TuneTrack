@@ -563,6 +563,261 @@ public class TrackEnricherServiceTests
         Assert.Equal("Alternative", recovered!.Genre);
     }
 
+    [Fact]
+    public async Task LookupTrackAsync_RetriesUnmatchedTrackWithPhStorefrontAndCachesResult()
+    {
+        var seenQueries = new List<string>();
+        var handler = new StubHandler(req =>
+        {
+            string query = req.RequestUri?.Query ?? string.Empty;
+            seenQueries.Add(query);
+
+            if (query.Contains("country=PH", StringComparison.OrdinalIgnoreCase) &&
+                query.Contains("Hev", StringComparison.OrdinalIgnoreCase))
+            {
+                string phJson = JsonSerializer.Serialize(new
+                {
+                    resultCount = 1,
+                    results = new[]
+                    {
+                        new
+                        {
+                            trackName = "Para Sa Streets",
+                            artistName = "Hev Abi",
+                            collectionName = "Sakalam",
+                            primaryGenreName = "Hip-Hop",
+                            releaseDate = "2023-06-02T00:00:00Z",
+                            artworkUrl100 = "https://is1-ssl.mzstatic.com/image/ha/100x100bb.jpg",
+                            previewUrl = "https://audio-ssl.itunes.apple.com/ha.m4a"
+                        }
+                    }
+                });
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(phJson, Encoding.UTF8, "application/json") };
+            }
+
+            if (query.Contains("MatchedUsTrack", StringComparison.OrdinalIgnoreCase))
+            {
+                string usJson = JsonSerializer.Serialize(new
+                {
+                    resultCount = 1,
+                    results = new[]
+                    {
+                        new
+                        {
+                            trackName = "MatchedUsTrack",
+                            artistName = "US Artist",
+                            collectionName = "US Album",
+                            primaryGenreName = "Rock",
+                            releaseDate = "2020-01-01T00:00:00Z",
+                            artworkUrl100 = "https://is1-ssl.mzstatic.com/image/us/100x100bb.jpg",
+                            previewUrl = "https://audio-ssl.itunes.apple.com/us.m4a"
+                        }
+                    }
+                });
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(usJson, Encoding.UTF8, "application/json") };
+            }
+
+            string empty = JsonSerializer.Serialize(new { resultCount = 0, results = Array.Empty<object>() });
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(empty, Encoding.UTF8, "application/json") };
+        });
+
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var enricher = new TrackEnricherService(new StubFactory(new HttpClient(handler)), cache, NullLogger<TrackEnricherService>.Instance);
+
+        // Matched on default storefront -> never calls country=PH
+        var usResult = await enricher.LookupTrackAsync("US Artist", "MatchedUsTrack");
+        Assert.NotNull(usResult);
+        Assert.DoesNotContain(seenQueries, q => q.Contains("country=PH", StringComparison.OrdinalIgnoreCase));
+
+        // Unmatched on default storefront -> falls back to country=PH and caches match
+        var phResult = await enricher.LookupTrackAsync("Hev Abi", "Para Sa Streets");
+        Assert.NotNull(phResult);
+        Assert.Equal("Hip-Hop/Rap", phResult!.Genre);
+        Assert.Contains(seenQueries, q => q.Contains("country=PH", StringComparison.OrdinalIgnoreCase));
+
+        int callsBeforeCacheHit = seenQueries.Count;
+        var cachedPhResult = await enricher.LookupTrackAsync("Hev Abi", "Para Sa Streets");
+        Assert.NotNull(cachedPhResult);
+        Assert.Equal("Hip-Hop/Rap", cachedPhResult!.Genre);
+        Assert.Equal(callsBeforeCacheHit, seenQueries.Count);
+    }
+
+    [Fact]
+    public async Task LookupTrackAsync_PhRetryUsesBackoffOn429AndStillEnforcesArtistMatch()
+    {
+        int phAttempts = 0;
+        var handler = new StubHandler(req =>
+        {
+            string query = req.RequestUri?.Query ?? string.Empty;
+
+            if (query.Contains("country=PH", StringComparison.OrdinalIgnoreCase))
+            {
+                if (query.Contains("Flow", StringComparison.OrdinalIgnoreCase))
+                {
+                    phAttempts++;
+                    if (phAttempts == 1)
+                    {
+                        return new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+                    }
+
+                    string phMatchJson = JsonSerializer.Serialize(new
+                    {
+                        resultCount = 1,
+                        results = new[]
+                        {
+                            new
+                            {
+                                trackName = "Driftstar",
+                                artistName = "Flow G",
+                                collectionName = "Single",
+                                primaryGenreName = "Hip-Hop/Rap",
+                                releaseDate = "2024-02-01T00:00:00Z",
+                                artworkUrl100 = "https://is1-ssl.mzstatic.com/image/fg/100x100bb.jpg",
+                                previewUrl = "https://audio-ssl.itunes.apple.com/fg.m4a"
+                            }
+                        }
+                    });
+                    return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(phMatchJson, Encoding.UTF8, "application/json") };
+                }
+
+                string wrongArtistJson = JsonSerializer.Serialize(new
+                {
+                    resultCount = 1,
+                    results = new[]
+                    {
+                        new
+                        {
+                            trackName = "Some OPM Song",
+                            artistName = "Wrong Karaoke Band",
+                            collectionName = "Covers",
+                            primaryGenreName = "Pop",
+                            releaseDate = "2021-01-01T00:00:00Z",
+                            artworkUrl100 = "https://is1-ssl.mzstatic.com/image/w/100x100bb.jpg",
+                            previewUrl = "https://audio-ssl.itunes.apple.com/w.m4a"
+                        }
+                    }
+                });
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(wrongArtistJson, Encoding.UTF8, "application/json") };
+            }
+
+            string empty = JsonSerializer.Serialize(new { resultCount = 0, results = Array.Empty<object>() });
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(empty, Encoding.UTF8, "application/json") };
+        });
+
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var enricher = new TrackEnricherService(new StubFactory(new HttpClient(handler)), cache, NullLogger<TrackEnricherService>.Instance);
+
+        var matched = await enricher.LookupTrackAsync("Flow G", "Driftstar");
+        Assert.NotNull(matched);
+        Assert.Equal(2, phAttempts);
+        Assert.Equal("Hip-Hop/Rap", matched!.Genre);
+
+        var rejected = await enricher.LookupTrackAsync("Expected OPM Artist", "Some OPM Song");
+        Assert.Null(rejected);
+    }
+
+    [Fact]
+    public async Task LookupTrackAsync_MatchesHyphenatedAndReorderedCollaboratorArtists()
+    {
+        var factory = CreateStubFactory(query =>
+        {
+            string decoded = Uri.UnescapeDataString(query);
+            if (decoded.Contains("Driftstar", StringComparison.OrdinalIgnoreCase))
+            {
+                return new[]
+                {
+                    new StubCandidate("Driftstar", "Flow-G", "Single", "Hip-Hop/Rap", "2024-02-01T00:00:00Z",
+                        "https://is1-ssl.mzstatic.com/image/fg/100x100bb.jpg", "https://audio-ssl.itunes.apple.com/fg.m4a")
+                };
+            }
+            if (decoded.Contains("Wag Ipagsabi", StringComparison.OrdinalIgnoreCase))
+            {
+                return new[]
+                {
+                    new StubCandidate("Wag Ipagsabi (Live at The Cozy Cove)", "Bert Symoun & Dreycruz", "Live", "Pop", "2024-06-01T00:00:00Z",
+                        "https://is1-ssl.mzstatic.com/image/db/100x100bb.jpg", "https://audio-ssl.itunes.apple.com/db.m4a")
+                };
+            }
+            if (decoded.Contains("Dominga", StringComparison.OrdinalIgnoreCase))
+            {
+                return new[]
+                {
+                    new StubCandidate("Dominga", "Nateman & La Mave", "Single", "Hip-Hop/Rap", "2024-04-01T00:00:00Z",
+                        "https://is1-ssl.mzstatic.com/image/lm/100x100bb.jpg", "https://audio-ssl.itunes.apple.com/lm.m4a")
+                };
+            }
+            if (decoded.Contains("Unrelated Track", StringComparison.OrdinalIgnoreCase))
+            {
+                return new[]
+                {
+                    new StubCandidate("Buti Di Ka Nanatili", "CK YG, Realest Cram & Nateman", "Single", "Hip-Hop/Rap", "2024-01-01T00:00:00Z",
+                        "https://is1-ssl.mzstatic.com/image/x/100x100bb.jpg", "https://audio-ssl.itunes.apple.com/x.m4a")
+                };
+            }
+            return Array.Empty<StubCandidate>();
+        });
+
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var enricher = new TrackEnricherService(factory, cache, NullLogger<TrackEnricherService>.Instance);
+
+        var hyphenMatch = await enricher.LookupTrackAsync("Flow G", "Driftstar");
+        Assert.NotNull(hyphenMatch);
+
+        var swappedCollab1 = await enricher.LookupTrackAsync("Dreycruz, Bert Symoun", "Wag Ipagsabi");
+        Assert.NotNull(swappedCollab1);
+
+        var swappedCollab2 = await enricher.LookupTrackAsync("La Mave, Nateman", "Dominga");
+        Assert.NotNull(swappedCollab2);
+
+        // A single overlapping secondary collaborator when primary differs must still be rejected
+        var singleCollabOverlap = await enricher.LookupTrackAsync("Realest Cram, Young Blood Neet", "Unrelated Track");
+        Assert.Null(singleCollabOverlap);
+    }
+
+    [Fact]
+    public async Task LookupTrackAsync_TreatsHttp403AsRateLimitWithoutHammeringOrNegativeCaching()
+    {
+        int calls = 0;
+        var handler = new StubHandler(_ =>
+        {
+            calls++;
+            if (calls <= 3)
+            {
+                return new HttpResponseMessage(HttpStatusCode.Forbidden);
+            }
+
+            string okJson = JsonSerializer.Serialize(new
+            {
+                resultCount = 1,
+                results = new[]
+                {
+                    new
+                    {
+                        trackName = "Get Low",
+                        artistName = "O SIDE MAFIA & BRGR",
+                        collectionName = "Single",
+                        primaryGenreName = "Hip-Hop/Rap",
+                        releaseDate = "2024-01-01T00:00:00Z",
+                        artworkUrl100 = "https://is1-ssl.mzstatic.com/image/os/100x100bb.jpg",
+                        previewUrl = "https://audio-ssl.itunes.apple.com/os.m4a"
+                    }
+                }
+            });
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(okJson, Encoding.UTF8, "application/json") };
+        });
+
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var enricher = new TrackEnricherService(new StubFactory(new HttpClient(handler)), cache, NullLogger<TrackEnricherService>.Instance);
+
+        var blocked = await enricher.LookupTrackAsync("O SIDE MAFIA, BRGR", "Get Low");
+        Assert.Null(blocked);
+        Assert.Equal(3, calls);
+
+        var recovered = await enricher.LookupTrackAsync("O SIDE MAFIA, BRGR", "Get Low");
+        Assert.NotNull(recovered);
+        Assert.Equal("Hip-Hop/Rap", recovered!.Genre);
+    }
+
     private sealed class StubFactory(HttpClient client) : IHttpClientFactory
     {
         public HttpClient CreateClient(string name) => client;

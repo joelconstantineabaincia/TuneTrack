@@ -818,6 +818,113 @@ public class TrackEnricherServiceTests
         Assert.Equal("Hip-Hop/Rap", recovered!.Genre);
     }
 
+    [Fact]
+    public async Task LookupTracksByIdsAsync_BatchesByCountryRetries429CachesAndNormalizes()
+    {
+        var seenUris = new List<string>();
+        int caAttempts = 0;
+
+        var handler = new StubHandler(req =>
+        {
+            string uri = req.RequestUri?.ToString() ?? string.Empty;
+            seenUris.Add(uri);
+
+            Assert.DoesNotContain("/search", uri, StringComparison.OrdinalIgnoreCase);
+
+            if (uri.Contains("country=ca", StringComparison.OrdinalIgnoreCase))
+            {
+                caAttempts++;
+                if (caAttempts == 1)
+                {
+                    return new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+                }
+
+                string caJson = JsonSerializer.Serialize(new
+                {
+                    resultCount = 2,
+                    results = new object[]
+                    {
+                        new
+                        {
+                            wrapperType = "track",
+                            kind = "song",
+                            trackId = 1444327839L,
+                            trackName = "Mi Gente",
+                            artistName = "J Balvin & Willy William",
+                            collectionName = "Mi Gente - Single",
+                            primaryGenreName = "Pop",
+                            releaseDate = "2017-06-30T12:00:00Z",
+                            artworkUrl100 = "https://is1-ssl.mzstatic.com/image/mg/100x100bb.jpg",
+                            previewUrl = "https://audio-ssl.itunes.apple.com/mg.m4a",
+                            trackTimeMillis = 186939
+                        },
+                        new
+                        {
+                            wrapperType = "track",
+                            kind = "song",
+                            trackId = 1698400133L,
+                            trackName = "rockstar (feat. 21 Savage)",
+                            artistName = "Post Malone",
+                            collectionName = "The Diamond Collection (Deluxe)",
+                            primaryGenreName = "Hip-Hop",
+                            releaseDate = "2017-09-15T12:00:00Z",
+                            artworkUrl100 = "https://is1-ssl.mzstatic.com/image/rs/100x100bb.jpg",
+                            previewUrl = "https://audio-ssl.itunes.apple.com/rs.m4a",
+                            trackTimeMillis = 218146
+                        }
+                    }
+                });
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(caJson, Encoding.UTF8, "application/json") };
+            }
+
+            string usJson = JsonSerializer.Serialize(new
+            {
+                resultCount = 1,
+                results = new[]
+                {
+                    new
+                    {
+                        wrapperType = "track",
+                        kind = "song",
+                        trackId = 1444327839L,
+                        trackName = "Mi Gente",
+                        artistName = "J Balvin & Willy William",
+                        collectionName = "Mi Gente - US Edition",
+                        primaryGenreName = "Pop",
+                        releaseDate = "2017-06-30T12:00:00Z",
+                        artworkUrl100 = "https://is1-ssl.mzstatic.com/image/mgus/100x100bb.jpg",
+                        previewUrl = "https://audio-ssl.itunes.apple.com/mgus.m4a",
+                        trackTimeMillis = 186939
+                    }
+                }
+            });
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(usJson, Encoding.UTF8, "application/json") };
+        });
+
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var enricher = new TrackEnricherService(new StubFactory(new HttpClient(handler)), cache, NullLogger<TrackEnricherService>.Instance);
+
+        var caResult = await enricher.LookupTracksByIdsAsync(["1444327839", "1698400133", "1444327839"], "ca");
+        Assert.Equal(2, caAttempts);
+        Assert.Equal(2, caResult.Count);
+        Assert.Equal("Pop", caResult["1444327839"].Metadata.Genre);
+        Assert.Equal("Hip-Hop/Rap", caResult["1698400133"].Metadata.Genre);
+        Assert.Equal(2017, caResult["1698400133"].Metadata.ReleaseYear);
+        Assert.Equal("https://is1-ssl.mzstatic.com/image/rs/600x600bb.jpg", caResult["1698400133"].Metadata.ArtworkUrl);
+        Assert.Equal("The Diamond Collection (Deluxe)", caResult["1698400133"].Metadata.Album);
+
+        // Cached in "ca" -> zero new HTTP calls
+        int callsAfterFirstLookup = seenUris.Count;
+        var cachedCa = await enricher.LookupTracksByIdsAsync(["1444327839", "1698400133"], "ca");
+        Assert.Equal(2, cachedCa.Count);
+        Assert.Equal(callsAfterFirstLookup, seenUris.Count);
+
+        // Different storefront -> hits lookup with country=us
+        var usResult = await enricher.LookupTracksByIdsAsync(["1444327839"], "us");
+        Assert.Single(usResult);
+        Assert.Equal("Mi Gente - US Edition", usResult["1444327839"].Metadata.Album);
+    }
+
     private sealed class StubFactory(HttpClient client) : IHttpClientFactory
     {
         public HttpClient CreateClient(string name) => client;

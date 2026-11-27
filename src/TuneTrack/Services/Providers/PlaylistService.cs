@@ -210,8 +210,13 @@ public class PlaylistService : IPlaylistService
             Tracks = tracks
         };
 
-        // Persist completed analyses only (never save 0-track or partial results to history)
-        if (!isPartialResult && tracks.Count > 0 && !string.IsNullOrWhiteSpace(clientId))
+        bool hasAnyMetadata = tracks.Any(t =>
+            !string.IsNullOrWhiteSpace(t.Genre) ||
+            t.ReleaseYear.HasValue ||
+            !string.IsNullOrWhiteSpace(t.Album));
+
+        // Persist completed analyses only (never save 0-track, zero-metadata, or partial results to history)
+        if (!isPartialResult && tracks.Count > 0 && hasAnyMetadata && !string.IsNullOrWhiteSpace(clientId))
         {
             try
             {

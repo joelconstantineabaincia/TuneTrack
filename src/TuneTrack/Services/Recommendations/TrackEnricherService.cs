@@ -15,6 +15,14 @@ public record TrackEnrichmentResult(
     string? Album
 );
 
+public record TrackLookupItem(
+    string TrackId,
+    string? Title,
+    string? Artist,
+    int? DurationMs,
+    TrackEnrichmentResult Metadata
+);
+
 public interface ITrackEnricherService
 {
     Task<TrackEnrichmentResult?> LookupTrackAsync(string artist, string title, CancellationToken cancellationToken = default);
@@ -25,11 +33,18 @@ public interface ITrackEnricherService
         int maxToEnrich = 100,
         CancellationToken cancellationToken = default) =>
         EnrichTracksAsync(tracks, maxToEnrich, cancellationToken);
+    Task<IReadOnlyDictionary<string, TrackLookupItem>> LookupTracksByIdsAsync(
+        IEnumerable<string> trackIds,
+        string? country,
+        IProgress<(int Completed, int Total)>? progress = null,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyDictionary<string, TrackLookupItem>>(new Dictionary<string, TrackLookupItem>());
 }
 
 public class TrackEnricherService : ITrackEnricherService
 {
     private const int MaxSearchAttempts = 3;
+    private const int LookupBatchSize = 50;
     private static readonly TimeSpan[] RetryDelays = [TimeSpan.FromMilliseconds(750), TimeSpan.FromMilliseconds(1500)];
     private static readonly TimeSpan PoliteThrottleDelay = TimeSpan.FromMilliseconds(550);
     private static readonly TimeSpan ElevatedThrottleDelay = TimeSpan.FromMilliseconds(1100);
@@ -160,6 +175,79 @@ public class TrackEnricherService : ITrackEnricherService
         return new LookupOutcome(null, finalReason, lastDetail);
     }
 
+    public async Task<IReadOnlyDictionary<string, TrackLookupItem>> LookupTracksByIdsAsync(
+        IEnumerable<string> trackIds,
+        string? country,
+        IProgress<(int Completed, int Total)>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        var orderedIds = trackIds?
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Select(id => id.Trim())
+            .Where(id => id.All(char.IsDigit))
+            .Distinct(StringComparer.Ordinal)
+            .ToList() ?? new List<string>();
+
+        var resolved = new Dictionary<string, TrackLookupItem>(StringComparer.Ordinal);
+        if (orderedIds.Count == 0)
+            return resolved;
+
+        string normalizedCountry = string.IsNullOrWhiteSpace(country) ? string.Empty : country.Trim().ToLowerInvariant();
+        string countryParam = string.IsNullOrEmpty(normalizedCountry) ? string.Empty : $"&country={Uri.EscapeDataString(normalizedCountry)}";
+
+        var uncachedIds = new List<string>();
+        foreach (string id in orderedIds)
+        {
+            if (_cache.TryGetValue(GetIdCacheKey(normalizedCountry, id), out TrackLookupItem? cached) && cached != null)
+            {
+                resolved[id] = cached;
+            }
+            else
+            {
+                uncachedIds.Add(id);
+            }
+        }
+
+        int total = orderedIds.Count;
+        int completed = resolved.Count;
+        progress?.Report((completed, total));
+
+        foreach (var batch in uncachedIds.Chunk(LookupBatchSize))
+        {
+            string joinedIds = string.Join(",", batch);
+            string url = $"https://itunes.apple.com/lookup?id={Uri.EscapeDataString(joinedIds)}&entity=song{countryParam}";
+            var response = await FetchITunesJsonWithRetryAsync(url, $"lookup:{batch.Length}:{normalizedCountry}", cancellationToken);
+
+            if (response.Results != null)
+            {
+                foreach (var item in response.Results)
+                {
+                    if (!item.TrackId.HasValue)
+                        continue;
+
+                    string trackId = item.TrackId.Value.ToString();
+                    var lookupItem = new TrackLookupItem(
+                        TrackId: trackId,
+                        Title: item.TrackName,
+                        Artist: item.ArtistName,
+                        DurationMs: item.TrackTimeMillis is > 0 ? item.TrackTimeMillis : null,
+                        Metadata: ToEnrichmentResult(item));
+
+                    resolved[trackId] = lookupItem;
+                    _cache.Set(GetIdCacheKey(normalizedCountry, trackId), lookupItem, TimeSpan.FromHours(24));
+                }
+            }
+
+            completed = Math.Min(total, completed + batch.Length);
+            progress?.Report((completed, total));
+        }
+
+        return resolved;
+    }
+
+    private static string GetIdCacheKey(string normalizedCountry, string trackId) =>
+        $"itunes_id_{normalizedCountry}_{trackId}";
+
     private async Task<SearchAttemptResult> SearchWithRetryAsync(
         string expectedArtist,
         string term,
@@ -171,6 +259,33 @@ public class TrackEnricherService : ITrackEnricherService
         string countryParam = string.IsNullOrWhiteSpace(country) ? string.Empty : $"&country={Uri.EscapeDataString(country)}";
         string url = $"https://itunes.apple.com/search?term={escapedTerm}&entity=song&limit={limit}{countryParam}";
 
+        var fetch = await FetchITunesJsonWithRetryAsync(url, term, cancellationToken);
+        if (fetch.FailureReason != MatchFailureReason.None)
+        {
+            return new SearchAttemptResult(null, false, fetch.FailureReason, fetch.Detail);
+        }
+
+        var results = fetch.Results;
+        if (results == null || results.Count == 0)
+        {
+            return new SearchAttemptResult(null, false, MatchFailureReason.ZeroResults);
+        }
+
+        var item = results.FirstOrDefault(candidate => IsArtistMatch(expectedArtist, candidate.ArtistName));
+        if (item == null)
+        {
+            string topCandidate = $"{results[0].ArtistName} - {results[0].TrackName}";
+            return new SearchAttemptResult(null, true, MatchFailureReason.ArtistMismatch, topCandidate);
+        }
+
+        return new SearchAttemptResult(ToEnrichmentResult(item), true, MatchFailureReason.None);
+    }
+
+    private async Task<(List<ITunesTrackItem>? Results, MatchFailureReason FailureReason, string? Detail)> FetchITunesJsonWithRetryAsync(
+        string url,
+        string logLabel,
+        CancellationToken cancellationToken)
+    {
         await _throttle.WaitAsync(cancellationToken);
         try
         {
@@ -198,81 +313,47 @@ public class TrackEnricherService : ITrackEnricherService
                         if (attempt < MaxSearchAttempts - 1)
                         {
                             var delay = GetRetryDelay(response, attempt);
-                            _logger.LogDebug("iTunes returned {StatusCode} for '{Term}', backing off {DelayMs}ms (attempt {Attempt}/{Max})",
-                                (int)response.StatusCode, term, (int)delay.TotalMilliseconds, attempt + 1, MaxSearchAttempts);
+                            _logger.LogDebug("iTunes returned {StatusCode} for '{Label}', backing off {DelayMs}ms (attempt {Attempt}/{Max})",
+                                (int)response.StatusCode, logLabel, (int)delay.TotalMilliseconds, attempt + 1, MaxSearchAttempts);
                             await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
                             continue;
                         }
 
-                        _logger.LogWarning("iTunes returned {StatusCode} after {Max} attempts for '{Term}'",
-                            (int)response.StatusCode, MaxSearchAttempts, term);
-                        return new SearchAttemptResult(
-                            null,
-                            false,
+                        _logger.LogWarning("iTunes returned {StatusCode} after {Max} attempts for '{Label}'",
+                            (int)response.StatusCode, MaxSearchAttempts, logLabel);
+                        return (null,
                             isRateLimit ? MatchFailureReason.TransientRateLimit : MatchFailureReason.HttpError,
                             $"HTTP {(int)response.StatusCode}");
                     }
 
                     if (!response.IsSuccessStatusCode)
                     {
-                        _logger.LogWarning("iTunes Search API returned status {StatusCode} for query: {Term}", response.StatusCode, term);
-                        return new SearchAttemptResult(null, false, MatchFailureReason.HttpError, $"HTTP {(int)response.StatusCode}");
+                        _logger.LogWarning("iTunes API returned status {StatusCode} for query: {Label}", response.StatusCode, logLabel);
+                        return (null, MatchFailureReason.HttpError, $"HTTP {(int)response.StatusCode}");
                     }
 
                     var json = await response.Content.ReadAsStringAsync(cts.Token);
                     var itunesResponse = JsonSerializer.Deserialize<ITunesSearchResponse>(json);
-                    var results = itunesResponse?.Results;
-                    if (results == null || results.Count == 0)
-                    {
-                        return new SearchAttemptResult(null, false, MatchFailureReason.ZeroResults);
-                    }
-
-                    var item = results.FirstOrDefault(candidate => IsArtistMatch(expectedArtist, candidate.ArtistName));
-                    if (item == null)
-                    {
-                        string topCandidate = $"{results[0].ArtistName} - {results[0].TrackName}";
-                        return new SearchAttemptResult(null, true, MatchFailureReason.ArtistMismatch, topCandidate);
-                    }
-
-                    int? releaseYear = null;
-                    if (DateTime.TryParse(item.ReleaseDate, out var releaseDate))
-                    {
-                        releaseYear = releaseDate.Year;
-                    }
-
-                    string? artwork = item.ArtworkUrl100;
-                    if (!string.IsNullOrEmpty(artwork) && artwork.Contains("100x100bb.jpg"))
-                    {
-                        artwork = artwork.Replace("100x100bb.jpg", "600x600bb.jpg");
-                    }
-
-                    var result = new TrackEnrichmentResult(
-                        Genre: NormalizeGenre(item.PrimaryGenreName),
-                        ReleaseYear: releaseYear,
-                        ArtworkUrl: artwork,
-                        PreviewUrl: item.PreviewUrl,
-                        Album: item.CollectionName
-                    );
-                    return new SearchAttemptResult(result, true, MatchFailureReason.None);
+                    return (itunesResponse?.Results, MatchFailureReason.None, null);
                 }
                 catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
                 {
                     if (attempt < MaxSearchAttempts - 1)
                     {
                         var delay = RetryDelays[Math.Min(attempt, RetryDelays.Length - 1)];
-                        _logger.LogDebug("iTunes search timed out for '{Term}', retrying in {DelayMs}ms (attempt {Attempt}/{Max})",
-                            term, (int)delay.TotalMilliseconds, attempt + 1, MaxSearchAttempts);
+                        _logger.LogDebug("iTunes query timed out for '{Label}', retrying in {DelayMs}ms (attempt {Attempt}/{Max})",
+                            logLabel, (int)delay.TotalMilliseconds, attempt + 1, MaxSearchAttempts);
                         await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
                         continue;
                     }
 
-                    _logger.LogWarning("iTunes search timed out after {Max} attempts for '{Term}'", MaxSearchAttempts, term);
-                    return new SearchAttemptResult(null, false, MatchFailureReason.TransientTimeout, "Timeout");
+                    _logger.LogWarning("iTunes query timed out after {Max} attempts for '{Label}'", MaxSearchAttempts, logLabel);
+                    return (null, MatchFailureReason.TransientTimeout, "Timeout");
                 }
                 catch (HttpRequestException ex) when (attempt < MaxSearchAttempts - 1)
                 {
                     var delay = RetryDelays[Math.Min(attempt, RetryDelays.Length - 1)];
-                    _logger.LogDebug(ex, "iTunes HTTP error for '{Term}', retrying in {DelayMs}ms", term, (int)delay.TotalMilliseconds);
+                    _logger.LogDebug(ex, "iTunes HTTP error for '{Label}', retrying in {DelayMs}ms", logLabel, (int)delay.TotalMilliseconds);
                     await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
@@ -281,12 +362,12 @@ public class TrackEnricherService : ITrackEnricherService
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Failed to enrich track from iTunes for query: {Term}", term);
-                    return new SearchAttemptResult(null, false, MatchFailureReason.HttpError, ex.Message);
+                    _logger.LogWarning(ex, "Failed to query iTunes for: {Label}", logLabel);
+                    return (null, MatchFailureReason.HttpError, ex.Message);
                 }
             }
 
-            return new SearchAttemptResult(null, false, MatchFailureReason.TransientRateLimit);
+            return (null, MatchFailureReason.TransientRateLimit, null);
         }
         finally
         {
@@ -304,6 +385,29 @@ public class TrackEnricherService : ITrackEnricherService
                 _throttle.Release();
             }
         }
+    }
+
+    private static TrackEnrichmentResult ToEnrichmentResult(ITunesTrackItem item)
+    {
+        int? releaseYear = null;
+        if (DateTime.TryParse(item.ReleaseDate, out var releaseDate))
+        {
+            releaseYear = releaseDate.Year;
+        }
+
+        string? artwork = item.ArtworkUrl100;
+        if (!string.IsNullOrEmpty(artwork) && artwork.Contains("100x100bb.jpg"))
+        {
+            artwork = artwork.Replace("100x100bb.jpg", "600x600bb.jpg");
+        }
+
+        return new TrackEnrichmentResult(
+            Genre: NormalizeGenre(item.PrimaryGenreName),
+            ReleaseYear: releaseYear,
+            ArtworkUrl: artwork,
+            PreviewUrl: item.PreviewUrl,
+            Album: item.CollectionName
+        );
     }
 
     private static TimeSpan GetRetryDelay(HttpResponseMessage response, int attempt)
@@ -582,6 +686,9 @@ public class TrackEnricherService : ITrackEnricherService
 
     private class ITunesTrackItem
     {
+        [JsonPropertyName("trackId")]
+        public long? TrackId { get; set; }
+
         [JsonPropertyName("trackName")]
         public string? TrackName { get; set; }
 
@@ -602,5 +709,8 @@ public class TrackEnricherService : ITrackEnricherService
 
         [JsonPropertyName("previewUrl")]
         public string? PreviewUrl { get; set; }
+
+        [JsonPropertyName("trackTimeMillis")]
+        public int? TrackTimeMillis { get; set; }
     }
 }

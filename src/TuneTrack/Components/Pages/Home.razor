@@ -155,6 +155,10 @@
     else if (dashboard != null)
     {
         bool isPartialView = dashboard.IsPartialResult || showPasteFallback || dashboard.Playlist.Tracks.Count == 0;
+        int totalTrackCount = dashboard.Playlist.Tracks.Count;
+        int matchedTrackCount = GetMatchedTrackCount();
+        bool hasMatchedMetadata = matchedTrackCount > 0;
+        bool isLowMetadataCoverage = hasMatchedMetadata && matchedTrackCount * 2 < totalTrackCount;
 
         <!-- Borderless Editorial Playlist Header -->
         <section aria-label="Playlist overview" class="pt-1 pb-8 border-b border-white/10">
@@ -186,13 +190,26 @@
                         <!-- Inline Stat Strip (no orphaned middots when wrapping) -->
                         int genreCount = GetDistinctGenreCount();
                         <div class="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs sm:text-sm text-zinc-300 font-mono tabular-nums">
-                            <span class="inline-flex items-center gap-1.5 font-bold whitespace-nowrap @GetScoreColor(dashboard.Diversity.TotalScore)">
-                                <span class="w-2 h-2 rounded-full bg-current" aria-hidden="true"></span>
-                                <span>@FormatWholeScore(dashboard.Diversity.TotalScore) Diversity</span>
-                            </span>
+                            @if (!hasMatchedMetadata)
+                            {
+                                <span class="inline-flex items-center gap-1.5 font-semibold whitespace-nowrap text-zinc-400">
+                                    Not enough data
+                                </span>
+                            }
+                            else
+                            {
+                                <span class="inline-flex items-center gap-1.5 font-bold whitespace-nowrap @GetScoreColor(dashboard.Diversity.TotalScore)">
+                                    <span class="w-2 h-2 rounded-full bg-current" aria-hidden="true"></span>
+                                    <span>@FormatWholeScore(dashboard.Diversity.TotalScore) Diversity</span>
+                                </span>
+                                @if (isLowMetadataCoverage)
+                                {
+                                    <span class="text-xs text-amber-300 font-normal whitespace-nowrap">Based on @matchedTrackCount of @totalTrackCount tracks</span>
+                                }
+                            }
                             <span class="whitespace-nowrap">@Pluralize(dashboard.Playlist.TrackCount, "Track", "Tracks")</span>
                             <span class="whitespace-nowrap">@dashboard.Playlist.TotalDuration</span>
-                            <span class="whitespace-nowrap">@Pluralize(genreCount, "Genre", "Genres")</span>
+                            <span class="whitespace-nowrap">@(genreCount == 0 ? "— Genres" : Pluralize(genreCount, "Genre", "Genres"))</span>
                         </div>
                     }
 
@@ -394,13 +411,6 @@
             <aside aria-label="Diversity metrics and recommendations" class="lg:col-span-4 min-w-0 space-y-7 lg:sticky lg:top-20">
                 <!-- Diversity Scorecard -->
                 <section class="pb-7 border-b border-white/10 space-y-4">
-                    @{
-                        int totalTrackCount = dashboard.Playlist.Tracks.Count;
-                        int matchedTrackCount = dashboard.Playlist.Tracks.Count(t =>
-                            !string.IsNullOrWhiteSpace(t.Genre) ||
-                            t.ReleaseYear.HasValue ||
-                            !string.IsNullOrWhiteSpace(t.Album));
-                    }
                     <div class="flex items-baseline justify-between gap-2">
                         <h2 class="font-display text-sm font-semibold text-zinc-100">Diversity Score</h2>
                         <span class="text-xs text-zinc-400 font-mono tabular-nums">
@@ -408,17 +418,35 @@
                         </span>
                     </div>
 
-                    <div class="flex items-baseline gap-3.5">
-                        <div class="flex items-baseline gap-1 font-mono tabular-nums flex-shrink-0">
-                            <span class="text-4xl font-bold tracking-tight text-white">
-                                @FormatWholeScore(dashboard.Diversity.TotalScore)
-                            </span>
-                            <span class="text-sm text-zinc-400">/ 100</span>
+                    @if (!hasMatchedMetadata)
+                    {
+                        <div class="space-y-1.5">
+                            <p class="font-display text-2xl font-bold tracking-tight text-zinc-300">Not enough data</p>
+                            <p class="text-xs text-zinc-400 leading-relaxed">
+                                No matched track metadata to calculate a diversity score yet.
+                            </p>
                         </div>
-                        <span class="text-xs text-zinc-400 leading-relaxed">
-                            @dashboard.Diversity.Summary
-                        </span>
-                    </div>
+                    }
+                    else
+                    {
+                        <div class="flex items-baseline gap-3.5">
+                            <div class="flex items-baseline gap-1 font-mono tabular-nums flex-shrink-0">
+                                <span class="text-4xl font-bold tracking-tight text-white">
+                                    @FormatWholeScore(dashboard.Diversity.TotalScore)
+                                </span>
+                                <span class="text-sm text-zinc-400">/ 100</span>
+                            </div>
+                            <div class="space-y-1">
+                                @if (isLowMetadataCoverage)
+                                {
+                                    <p class="text-[11px] font-mono text-amber-300">Based on @matchedTrackCount of @totalTrackCount tracks</p>
+                                }
+                                <p class="text-xs text-zinc-400 leading-relaxed">
+                                    @dashboard.Diversity.Summary
+                                </p>
+                            </div>
+                        </div>
+                    }
 
                     <!-- 3 Metric Bars -->
                     <div class="space-y-3 pt-3 border-t border-white/5 text-xs">
@@ -426,10 +454,10 @@
                         <div class="space-y-1">
                             <div class="flex justify-between text-zinc-400">
                                 <span>Genre Variety <span class="font-mono text-[11px]">(40% weight)</span></span>
-                                <span class="font-mono tabular-nums text-zinc-200">@FormatWholeScore(dashboard.Diversity.GenreVariety)%</span>
+                                <span class="font-mono tabular-nums text-zinc-200">@(hasMatchedMetadata ? $"{FormatWholeScore(dashboard.Diversity.GenreVariety)}%" : "—")</span>
                             </div>
                             <div class="h-1.5 w-full bg-zinc-800 rounded-full overflow-hidden">
-                                <div class="h-full bg-cyan-400 rounded-full transition-all duration-500" style="width: @(dashboard.Diversity.GenreVariety.ToString("0.##", CultureInfo.InvariantCulture))%"></div>
+                                <div class="h-full bg-cyan-400 rounded-full transition-all duration-500" style="width: @(hasMatchedMetadata ? dashboard.Diversity.GenreVariety.ToString("0.##", CultureInfo.InvariantCulture) : "0")%"></div>
                             </div>
                         </div>
 
@@ -437,10 +465,10 @@
                         <div class="space-y-1">
                             <div class="flex justify-between text-zinc-400">
                                 <span>Artist Uniqueness <span class="font-mono text-[11px]">(35% weight)</span></span>
-                                <span class="font-mono tabular-nums text-zinc-200">@FormatWholeScore(dashboard.Diversity.ArtistUniqueness)%</span>
+                                <span class="font-mono tabular-nums text-zinc-200">@(hasMatchedMetadata ? $"{FormatWholeScore(dashboard.Diversity.ArtistUniqueness)}%" : "—")</span>
                             </div>
                             <div class="h-1.5 w-full bg-zinc-800 rounded-full overflow-hidden">
-                                <div class="h-full bg-emerald-400 rounded-full transition-all duration-500" style="width: @(dashboard.Diversity.ArtistUniqueness.ToString("0.##", CultureInfo.InvariantCulture))%"></div>
+                                <div class="h-full bg-emerald-400 rounded-full transition-all duration-500" style="width: @(hasMatchedMetadata ? dashboard.Diversity.ArtistUniqueness.ToString("0.##", CultureInfo.InvariantCulture) : "0")%"></div>
                             </div>
                         </div>
 
@@ -448,10 +476,10 @@
                         <div class="space-y-1">
                             <div class="flex justify-between text-zinc-400">
                                 <span>Era Spread <span class="font-mono text-[11px]">(25% weight)</span></span>
-                                <span class="font-mono tabular-nums text-zinc-200">@FormatWholeScore(dashboard.Diversity.EraSpread)%</span>
+                                <span class="font-mono tabular-nums text-zinc-200">@(hasMatchedMetadata ? $"{FormatWholeScore(dashboard.Diversity.EraSpread)}%" : "—")</span>
                             </div>
                             <div class="h-1.5 w-full bg-zinc-800 rounded-full overflow-hidden">
-                                <div class="h-full bg-purple-400 rounded-full transition-all duration-500" style="width: @(dashboard.Diversity.EraSpread.ToString("0.##", CultureInfo.InvariantCulture))%"></div>
+                                <div class="h-full bg-purple-400 rounded-full transition-all duration-500" style="width: @(hasMatchedMetadata ? dashboard.Diversity.EraSpread.ToString("0.##", CultureInfo.InvariantCulture) : "0")%"></div>
                             </div>
                         </div>
                     </div>
@@ -1171,6 +1199,12 @@
             .Select(g => new GenreStat(g.Key, (int)Math.Round((double)g.Count() / total * 100)))
             .ToList();
     }
+
+    private int GetMatchedTrackCount() =>
+        dashboard?.Playlist?.Tracks?.Count(t =>
+            !string.IsNullOrWhiteSpace(t.Genre) ||
+            t.ReleaseYear.HasValue ||
+            !string.IsNullOrWhiteSpace(t.Album)) ?? 0;
 
     private int GetDistinctGenreCount()
     {

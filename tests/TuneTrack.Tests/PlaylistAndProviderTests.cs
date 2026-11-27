@@ -2,7 +2,9 @@ namespace TuneTrack.Tests;
 
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using TuneTrack.Data;
@@ -135,7 +137,7 @@ public class PlaylistAndProviderTests
             new SamplePlaylistService(),
             new DiversityScorer(),
             new EmptyRecommender(),
-            new NullEnricher(),
+            new CountingEnricher(),
             db,
             NullLogger<PlaylistService>.Instance);
 
@@ -282,6 +284,236 @@ public class PlaylistAndProviderTests
         Assert.False(saveResult);
         Assert.Equal((false, false), toggleResult);
         Assert.Contains(logger.Entries, e => e.Level == LogLevel.Error);
+    }
+
+    [Fact]
+    public async Task AppleMusicProvider_ParsesSerializedServerDataAndResolvesByIdWithStorefront()
+    {
+        string fixturePath = Path.Combine(AppContext.BaseDirectory, "Fixtures", "apple-playlist-ca-trimmed.html");
+        string fixtureHtml = await File.ReadAllTextAsync(fixturePath);
+
+        var lookupUris = new List<string>();
+        var handler = new StubHandler(req =>
+        {
+            string uri = req.RequestUri?.ToString() ?? string.Empty;
+            if (uri.Contains("music.apple.com", StringComparison.OrdinalIgnoreCase))
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(fixtureHtml, Encoding.UTF8, "text/html")
+                };
+            }
+
+            Assert.DoesNotContain("/search", uri, StringComparison.OrdinalIgnoreCase);
+            lookupUris.Add(uri);
+
+            string lookupJson = JsonSerializer.Serialize(new
+            {
+                resultCount = 7,
+                results = new object[]
+                {
+                    new { wrapperType = "track", kind = "song", trackId = 1444327839L, trackName = "Mi Gente", artistName = "J Balvin & Willy William", collectionName = "Mi Gente - Single", primaryGenreName = "Pop", releaseDate = "2017-06-30T12:00:00Z", artworkUrl100 = "https://is1-ssl.mzstatic.com/image/1/100x100bb.jpg", previewUrl = "https://audio-ssl.itunes.apple.com/1.m4a", trackTimeMillis = 186939 },
+                    new { wrapperType = "track", kind = "song", trackId = 1698400133L, trackName = "rockstar (feat. 21 Savage)", artistName = "Post Malone", collectionName = "The Diamond Collection (Deluxe)", primaryGenreName = "Hip-Hop", releaseDate = "2017-09-15T12:00:00Z", artworkUrl100 = "https://is1-ssl.mzstatic.com/image/2/100x100bb.jpg", previewUrl = "https://audio-ssl.itunes.apple.com/2.m4a", trackTimeMillis = 218146 },
+                    new { wrapperType = "track", kind = "song", trackId = 1272353167L, trackName = "Good Old Days (feat. Kesha)", artistName = "Macklemore", collectionName = "GEMINI", primaryGenreName = "Hip-Hop/Rap", releaseDate = "2017-09-22T12:00:00Z", artworkUrl100 = "https://is1-ssl.mzstatic.com/image/3/100x100bb.jpg", previewUrl = "https://audio-ssl.itunes.apple.com/3.m4a", trackTimeMillis = 240507 },
+                    new { wrapperType = "track", kind = "song", trackId = 1440899202L, trackName = "Lonely Together (feat. Rita Ora)", artistName = "Avicii", collectionName = "AVĪCI (01) - EP", primaryGenreName = "Dance", releaseDate = "2017-08-11T12:00:00Z", artworkUrl100 = "https://is1-ssl.mzstatic.com/image/4/100x100bb.jpg", previewUrl = "https://audio-ssl.itunes.apple.com/4.m4a", trackTimeMillis = 181731 },
+                    new { wrapperType = "track", kind = "song", trackId = 1444278727L, trackName = "Phases", artistName = "ALMA & French Montana", collectionName = "Phases - Single", primaryGenreName = "Pop", releaseDate = "2017-09-21T12:00:00Z", artworkUrl100 = "https://is1-ssl.mzstatic.com/image/5/100x100bb.jpg", previewUrl = "https://audio-ssl.itunes.apple.com/5.m4a", trackTimeMillis = 203892 },
+                    new { wrapperType = "track", kind = "song", trackId = 1248378144L, trackName = "Bodak Yellow", artistName = "Cardi B", collectionName = "Bodak Yellow - Single", primaryGenreName = "Hip-Hop", releaseDate = "2017-06-16T12:00:00Z", artworkUrl100 = "https://is1-ssl.mzstatic.com/image/6/100x100bb.jpg", previewUrl = "https://audio-ssl.itunes.apple.com/6.m4a", trackTimeMillis = 223962 },
+                    new { wrapperType = "track", kind = "song", trackId = 1268152499L, trackName = "Silence (feat. Khalid)", artistName = "Marshmello", collectionName = "Silence (feat. Khalid) - Single", primaryGenreName = "Electronic", releaseDate = "2017-08-11T12:00:00Z", artworkUrl100 = "https://is1-ssl.mzstatic.com/image/7/100x100bb.jpg", previewUrl = "https://audio-ssl.itunes.apple.com/7.m4a", trackTimeMillis = 180823 }
+                }
+            });
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(lookupJson, Encoding.UTF8, "application/json")
+            };
+        });
+
+        var factory = new StubFactory(new HttpClient(handler));
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var enricher = new TrackEnricherService(factory, cache, NullLogger<TrackEnricherService>.Instance);
+        var provider = new AppleMusicPlaylistProvider(factory, enricher, NullLogger<AppleMusicPlaylistProvider>.Instance);
+
+        var result = await provider.GetPlaylistAsync(new Uri("https://music.apple.com/ca/playlist/apple-music-list/pl.41fda5adbf9b4db4ba1a2c0a76099ef9"));
+
+        Assert.True(result.Success);
+        Assert.False(result.IsPartialResult);
+        Assert.Equal("Apple Music List", result.Title);
+        Assert.Equal(7, result.Tracks.Count);
+        Assert.Single(lookupUris);
+        Assert.Contains("country=ca", lookupUris[0], StringComparison.OrdinalIgnoreCase);
+
+        Assert.Equal(("Mi Gente", "J Balvin, Willy William"), (result.Tracks[0].Title, result.Tracks[0].Artist));
+        Assert.Equal(("rockstar (feat. 21 Savage)", "Post Malone"), (result.Tracks[1].Title, result.Tracks[1].Artist));
+        Assert.Equal(("Good Old Days (feat. Kesha)", "Macklemore"), (result.Tracks[2].Title, result.Tracks[2].Artist));
+        Assert.Equal(("Lonely Together (feat. Rita Ora)", "Avicii"), (result.Tracks[3].Title, result.Tracks[3].Artist));
+        Assert.Equal(("Phases", "ALMA, French Montana"), (result.Tracks[4].Title, result.Tracks[4].Artist));
+        Assert.Equal(("Bodak Yellow", "Cardi B"), (result.Tracks[5].Title, result.Tracks[5].Artist));
+        Assert.Equal(("Silence (feat. Khalid)", "Marshmello"), (result.Tracks[6].Title, result.Tracks[6].Artist));
+
+        Assert.DoesNotContain(result.Tracks, t => t.Artist.Contains("Apple Music Artist", StringComparison.OrdinalIgnoreCase));
+        Assert.All(result.Tracks, t =>
+        {
+            Assert.False(string.IsNullOrWhiteSpace(t.Genre));
+            Assert.NotNull(t.ReleaseYear);
+            Assert.False(string.IsNullOrWhiteSpace(t.Album));
+            Assert.EndsWith("600x600bb.jpg", t.ArtworkUrl);
+            Assert.False(string.IsNullOrWhiteSpace(t.PreviewUrl));
+        });
+    }
+
+    [Fact]
+    public async Task AppleMusicProvider_BuildsTracksFromLookupWhenSerializedDataMissing_AndUsesPhStorefront()
+    {
+        string metaOnlyHtml = """
+            <html><head>
+              <meta property="og:title" content="OPM Spotlight on Apple Music">
+              <meta property="og:image" content="https://is1-ssl.mzstatic.com/image/opm/cover.jpg">
+              <meta property="music:song" content="https://music.apple.com/ph/song/wag-ipagsabi/1700000001">
+              <meta property="music:song" content="https://music.apple.com/ph/song/dominga/1700000002">
+            </head><body></body></html>
+            """;
+
+        string? capturedLookupUri = null;
+        var handler = new StubHandler(req =>
+        {
+            string uri = req.RequestUri?.ToString() ?? string.Empty;
+            if (uri.Contains("music.apple.com", StringComparison.OrdinalIgnoreCase))
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(metaOnlyHtml, Encoding.UTF8, "text/html")
+                };
+            }
+
+            capturedLookupUri = uri;
+            string json = JsonSerializer.Serialize(new
+            {
+                resultCount = 2,
+                results = new object[]
+                {
+                    new { wrapperType = "track", kind = "song", trackId = 1700000001L, trackName = "Wag Ipagsabi", artistName = "Bert Symoun & Dreycruz", collectionName = "Live", primaryGenreName = "Pop", releaseDate = "2024-06-01T00:00:00Z", artworkUrl100 = "https://is1-ssl.mzstatic.com/image/a/100x100bb.jpg", previewUrl = "https://audio-ssl.itunes.apple.com/a.m4a", trackTimeMillis = 215000 },
+                    new { wrapperType = "track", kind = "song", trackId = 1700000002L, trackName = "Dominga", artistName = "Nateman & La Mave", collectionName = "Single", primaryGenreName = "Hip-Hop", releaseDate = "2024-04-01T00:00:00Z", artworkUrl100 = "https://is1-ssl.mzstatic.com/image/b/100x100bb.jpg", previewUrl = "https://audio-ssl.itunes.apple.com/b.m4a", trackTimeMillis = 190000 }
+                }
+            });
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
+        });
+
+        var factory = new StubFactory(new HttpClient(handler));
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var enricher = new TrackEnricherService(factory, cache, NullLogger<TrackEnricherService>.Instance);
+        var provider = new AppleMusicPlaylistProvider(factory, enricher, NullLogger<AppleMusicPlaylistProvider>.Instance);
+
+        var result = await provider.GetPlaylistAsync(new Uri("https://music.apple.com/ph/playlist/opm-spotlight/pl.testph"));
+
+        Assert.True(result.Success);
+        Assert.False(result.IsPartialResult);
+        Assert.NotNull(capturedLookupUri);
+        Assert.Contains("country=ph", capturedLookupUri!, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(2, result.Tracks.Count);
+        Assert.Equal(("Wag Ipagsabi", "Bert Symoun & Dreycruz", "Pop", 215000),
+            (result.Tracks[0].Title, result.Tracks[0].Artist, result.Tracks[0].Genre, result.Tracks[0].DurationMs));
+        Assert.Equal(("Dominga", "Nateman & La Mave", "Hip-Hop/Rap", 190000),
+            (result.Tracks[1].Title, result.Tracks[1].Artist, result.Tracks[1].Genre, result.Tracks[1].DurationMs));
+    }
+
+    [Fact]
+    public async Task AppleMusicProvider_ReturnsPartialFallbackWhenMajorityArtistsUnknown_AndHandlesAlbumOrSongGracefully()
+    {
+        string noArtistSsd = JsonSerializer.Serialize(new
+        {
+            data = new[]
+            {
+                new
+                {
+                    data = new
+                    {
+                        sections = new object[]
+                        {
+                            new
+                            {
+                                itemKind = "trackLockup",
+                                items = new object[]
+                                {
+                                    new { title = "Track One", artistName = "", duration = 180000 },
+                                    new { title = "Track Two", artistName = "", duration = 190000 }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        string unknownArtistHtml = $"<html><head><meta property=\"og:title\" content=\"Mystery List on Apple Music\"><script type=\"application/json\" id=\"serialized-server-data\">{noArtistSsd}</script></head></html>";
+
+        string albumHtml = "<html><head><meta property=\"og:title\" content=\"GEMINI by Macklemore on Apple Music\"><meta property=\"og:image\" content=\"https://is1-ssl.mzstatic.com/image/gemini.jpg\"></head></html>";
+
+        var handler = new StubHandler(req =>
+        {
+            string url = req.RequestUri?.ToString() ?? string.Empty;
+            string body = url.Contains("/album/") ? albumHtml : unknownArtistHtml;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(body, Encoding.UTF8, "text/html")
+            };
+        });
+
+        var factory = new StubFactory(new HttpClient(handler));
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var enricher = new TrackEnricherService(factory, cache, NullLogger<TrackEnricherService>.Instance);
+        var provider = new AppleMusicPlaylistProvider(factory, enricher, NullLogger<AppleMusicPlaylistProvider>.Instance);
+
+        var unknownArtistsResult = await provider.GetPlaylistAsync(new Uri("https://music.apple.com/us/playlist/mystery/pl.u-123"));
+        Assert.True(unknownArtistsResult.Success);
+        Assert.True(unknownArtistsResult.IsPartialResult);
+        Assert.Empty(unknownArtistsResult.Tracks);
+        Assert.Equal("Mystery List", unknownArtistsResult.Title);
+
+        var albumUri = new Uri("https://music.apple.com/ca/album/gemini/1272352884");
+        var songUri = new Uri("https://music.apple.com/ca/song/mi-gente/1444327839");
+        Assert.True(provider.CanHandle(albumUri));
+        Assert.True(provider.CanHandle(songUri));
+
+        var albumPartial = await provider.GetPlaylistAsync(albumUri);
+        Assert.True(albumPartial.Success);
+        Assert.True(albumPartial.IsPartialResult);
+        Assert.Equal("GEMINI by Macklemore", albumPartial.Title);
+    }
+
+    [Fact]
+    public async Task PlaylistService_DoesNotSaveZeroMetadataAnalysisToHistory()
+    {
+        var dbOptions = new DbContextOptionsBuilder<AppDbContext>()
+            .UseInMemoryDatabase($"TuneTrackZeroMetaTests_{Guid.NewGuid()}")
+            .Options;
+        await using var db = new AppDbContext(dbOptions);
+
+        var unenrichedProvider = new StubOkProvider(new List<AnalyzedTrack>
+        {
+            new() { Title = "Track A", Artist = "Artist A", DurationMs = 180000 },
+            new() { Title = "Track B", Artist = "Artist B", DurationMs = 200000 }
+        });
+
+        var service = new PlaylistService(
+            new[] { unenrichedProvider },
+            new SamplePlaylistService(),
+            new DiversityScorer(),
+            new EmptyRecommender(),
+            new NullEnricher(),
+            db,
+            NullLogger<PlaylistService>.Instance);
+
+        var result = await service.AnalyzeUrlAsync("https://music.apple.com/ca/playlist/empty-meta/pl.test0", "client-zero");
+
+        Assert.False(result.IsPartialResult);
+        Assert.Equal(2, result.Playlist.TrackCount);
+        Assert.Empty(await service.GetHistoryAsync("client-zero"));
+    }
+
+    private sealed class StubOkProvider(List<AnalyzedTrack> tracks) : IPlaylistProvider
+    {
+        public string PlatformName => "Apple Music";
+        public bool CanHandle(Uri uri) => true;
+        public Task<PlaylistFetchResult> GetPlaylistAsync(Uri uri, CancellationToken cancellationToken = default) =>
+            Task.FromResult(PlaylistFetchResult.Ok(PlatformName, "Zero Meta Mix", null, tracks));
     }
 
     private sealed class StubPartialProvider : IPlaylistProvider

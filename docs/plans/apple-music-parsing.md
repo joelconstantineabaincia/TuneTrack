@@ -87,7 +87,7 @@
 - [ ] Run `dotnet build` (`0` warnings) and `dotnet test` (all pass).
 
 ### Task 4: Live Verification, Screenshots, Impeccable Detect & Commit
-- [ ] Boot app against Supabase Postgres and analyze:
+- [ ] Boot app against PostgreSQL and analyze:
   1. `https://music.apple.com/ca/playlist/apple-music-list/pl.41fda5adbf9b4db4ba1a2c0a76099ef9` (report before `0/16` vs after matched count, verify no `"Apple Music Artist"`).
   2. Non-CA playlist (`https://music.apple.com/us/playlist/top-25-new-york-city/pl.a88b5c26caea48a59484370b6f79c9df`) and report matched count.
   3. Capture 1440px and 390px screenshots of resolved Apple Music results, run `impeccable detect`, confirm clean Postgres & git status (`TuneTrack.csproj` unstaged).

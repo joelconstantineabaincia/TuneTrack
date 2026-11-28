@@ -34,7 +34,7 @@ builder.Services.AddSingleton<IPlaylistProvider, YouTubeMusicPlaylistProvider>()
 // Primary Application Service
 builder.Services.AddScoped<IPlaylistService, PlaylistService>();
 
-// Configure AppDbContext (PostgreSQL / Supabase with In-Memory fallback)
+// Configure AppDbContext (PostgreSQL with In-Memory fallback)
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
 bool isPlaceholder = string.IsNullOrWhiteSpace(connectionString)
     || connectionString.Contains("YOUR_PASSWORD", StringComparison.OrdinalIgnoreCase)
